@@ -131,10 +131,10 @@ ${this.cartAutomation ? '✅ Cart automation enabled' : '❌ Cart automation not
 
 *Product Details:*
 • Name: Amul High Protein Buttermilk 200ml (Pack of 30)
-• URL: https://shop.amul.com/en/product/amul-high-protein-buttermilk-200-ml-or-pack-of-30
+• URL: <a href="https://shop.amul.com/en/product/amul-high-protein-buttermilk-200-ml-or-pack-of-30">View Product</a>
       `;
       
-      await ctx.reply(helpMessage, { parse_mode: 'Markdown' });
+      await ctx.reply(helpMessage, { parse_mode: 'HTML' });
     });
 
     // Handle unknown commands
@@ -206,7 +206,7 @@ ${this.formatStockStatus(status)}
 
 🛒 *Quick Actions:*
 • Use /addtocart to automatically add to your cart
-• Visit: https://shop.amul.com/en/product/amul-high-protein-buttermilk-200-ml-or-pack-of-30
+• Visit: <a href="https://shop.amul.com/en/product/amul-high-protein-buttermilk-200-ml-or-pack-of-30">Amul Product Page</a>
 
 ⏰ *Notification Settings:*
 • Cooldown: ${this.notificationSettings.cooldownMinutes} minutes
@@ -214,7 +214,7 @@ ${this.formatStockStatus(status)}
     `;
 
     try {
-      await this.bot.telegram.sendMessage(process.env.TELEGRAM_CHAT_ID!, message, { parse_mode: 'Markdown' });
+      await this.bot.telegram.sendMessage(process.env.TELEGRAM_CHAT_ID!, message, { parse_mode: 'HTML' });
     } catch (error) {
       console.error('Error sending notification:', error);
     }
