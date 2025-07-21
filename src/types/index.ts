@@ -34,10 +34,32 @@ export interface ProductInfo {
   imageUrl?: string;
 }
 
-export type BotCommand = 'start' | 'status' | 'stop' | 'help' | 'addtocart';
-
 export interface CartOperation {
   success: boolean;
   message: string;
   cartUrl?: string;
+}
+
+export interface AmulProduct {
+  id: string;
+  name: string;
+  description: string;
+  url: string;
+  category: string;
+  price?: string;
+  imageUrl?: string;
+}
+
+export interface UserProductSelection {
+  userId: string;
+  selectedProductId: string;
+  productName: string;
+  productUrl: string;
+  lastChecked?: Date;
+}
+
+export interface BotCommand {
+  command: string;
+  description: string;
+  usage?: string;
 } 
