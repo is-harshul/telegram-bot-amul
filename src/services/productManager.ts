@@ -98,7 +98,11 @@ export class ProductManager {
   }
 
   // Set user's selected product
-  setUserProduct(userId: string, productId: string): boolean {
+  setUserProduct(
+    userId: string,
+    productId: string,
+    userInfo?: { username?: string; firstName?: string; lastName?: string }
+  ): boolean {
     const product = this.getProductById(productId);
     if (!product) {
       return false;
@@ -110,6 +114,11 @@ export class ProductManager {
       productName: product.name,
       productUrl: product.url,
       lastChecked: new Date(),
+      username: userInfo?.username,
+      firstName: userInfo?.firstName,
+      lastName: userInfo?.lastName,
+      isMonitoring: false,
+      notificationEnabled: true,
     };
 
     this.userSelections.set(userId, selection);
@@ -133,6 +142,62 @@ export class ProductManager {
   // Remove user's product selection
   removeUserProduct(userId: string): boolean {
     return this.userSelections.delete(userId);
+  }
+
+  // Start monitoring for a user
+  startMonitoring(userId: string): boolean {
+    const selection = this.userSelections.get(userId);
+    if (!selection) {
+      return false;
+    }
+    selection.isMonitoring = true;
+    this.userSelections.set(userId, selection);
+    return true;
+  }
+
+  // Stop monitoring for a user
+  stopMonitoring(userId: string): boolean {
+    const selection = this.userSelections.get(userId);
+    if (!selection) {
+      return false;
+    }
+    selection.isMonitoring = false;
+    this.userSelections.set(userId, selection);
+    return true;
+  }
+
+  // Enable notifications for a user
+  enableNotifications(userId: string): boolean {
+    const selection = this.userSelections.get(userId);
+    if (!selection) {
+      return false;
+    }
+    selection.notificationEnabled = true;
+    this.userSelections.set(userId, selection);
+    return true;
+  }
+
+  // Disable notifications for a user
+  disableNotifications(userId: string): boolean {
+    const selection = this.userSelections.get(userId);
+    if (!selection) {
+      return false;
+    }
+    selection.notificationEnabled = false;
+    this.userSelections.set(userId, selection);
+    return true;
+  }
+
+  // Get all users who are monitoring
+  getMonitoringUsers(): UserProductSelection[] {
+    return Array.from(this.userSelections.values()).filter(
+      (selection) => selection.isMonitoring && selection.notificationEnabled
+    );
+  }
+
+  // Get all users (for admin purposes)
+  getAllUsers(): UserProductSelection[] {
+    return Array.from(this.userSelections.values());
   }
 
   // Format product list for display with pagination

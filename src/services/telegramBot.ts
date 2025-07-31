@@ -8,6 +8,7 @@ import {
   NotificationSettings,
   BotCommand,
 } from "../types";
+import { config } from "../config";
 
 export class TelegramBot {
   private bot: Telegraf<Context>;
@@ -107,6 +108,12 @@ Use /refresh_catalog to get the latest products from the website.
       `;
 
       await ctx.reply(welcomeMessage, { parse_mode: "HTML" });
+
+      // Start the monitoring service if it's not already running
+      if (!this.isMonitoring) {
+        this.startMonitoringLoop();
+        console.log("🔄 [Start] Monitoring service started for new user");
+      }
     });
 
     // Products command
@@ -206,25 +213,34 @@ Use the buttons below to browse by category:
         return;
       }
 
-      if (this.isMonitoring) {
-        await ctx.reply("⚠️ Monitoring is already active!");
-        return;
+      // Start monitoring for this specific user
+      const success = this.productManager.startMonitoring(userId);
+      if (success) {
+        await ctx.reply(
+          `✅ Stock monitoring started for <b>${selection.productName}</b>!\n\nI'll notify you when the product is back in stock.\n\nUse /stop_monitoring to stop monitoring.`,
+          { parse_mode: "HTML" }
+        );
+      } else {
+        await ctx.reply("❌ Failed to start monitoring. Please try again.");
       }
-
-      this.isMonitoring = true;
-      await ctx.reply(
-        `✅ Stock monitoring started for <b>${selection.productName}</b>! I'll notify you when the product is back in stock.`,
-        { parse_mode: "HTML" }
-      );
-
-      // Start the monitoring loop
-      this.startMonitoringLoop();
     });
 
     // Stop monitoring command
     this.bot.command("stop_monitoring", async (ctx) => {
-      this.isMonitoring = false;
-      await ctx.reply("⏹️ Stock monitoring stopped.");
+      const userId = ctx.from?.id.toString();
+      if (!userId) {
+        await ctx.reply("❌ Unable to identify user.");
+        return;
+      }
+
+      const success = this.productManager.stopMonitoring(userId);
+      if (success) {
+        await ctx.reply(
+          "⏹️ Stock monitoring stopped for your selected product."
+        );
+      } else {
+        await ctx.reply("❌ No monitoring was active for your account.");
+      }
     });
 
     // Add to cart command
@@ -314,12 +330,12 @@ Use the buttons below to browse by category:
 • Cooldown system to prevent spam notifications
 • Live product catalog updates from website
 
-<b>Setup:</b>
-1. Set your Telegram bot token in TELEGRAM_BOT_TOKEN
-2. Set your chat ID in TELEGRAM_CHAT_ID
-3. Optionally set Amul credentials for cart automation
-4. Use /products to select a product to monitor
-5. Use /start_monitoring to begin monitoring
+<b>How to Use:</b>
+1. Use /products to browse and select a product
+2. Use /status to check current stock status
+3. Use /start_monitoring to begin automatic monitoring
+4. You'll receive notifications when the product comes back in stock
+5. Use /stop_monitoring to stop monitoring
 
 <b>Product Collection:</b>
 • <a href="https://shop.amul.com/en/collection/power-of-protein">Amul Power of Protein</a>
@@ -359,6 +375,60 @@ Use the buttons below to browse by category:
             error instanceof Error ? error.message : "Unknown error"
           }`
         );
+      }
+    });
+
+    // Admin commands (only for bot owner)
+    this.bot.command("start_monitoring_service", async (ctx) => {
+      const userId = ctx.from?.id.toString();
+      if (!userId) {
+        await ctx.reply("❌ Unable to identify user.");
+        return;
+      }
+
+      // Check if this is the bot owner (you can customize this check)
+      if (userId === config.chatId) {
+        this.startMonitoringLoop();
+        await ctx.reply("✅ Monitoring service started for all users!");
+      } else {
+        await ctx.reply("❌ You don't have permission to use this command.");
+      }
+    });
+
+    this.bot.command("users", async (ctx) => {
+      const userId = ctx.from?.id.toString();
+      if (!userId) {
+        await ctx.reply("❌ Unable to identify user.");
+        return;
+      }
+
+      // Check if this is the bot owner
+      if (userId === config.chatId) {
+        const allUsers = this.productManager.getAllUsers();
+        const monitoringUsers = this.productManager.getMonitoringUsers();
+
+        const message = `
+📊 <b>User Statistics</b>
+
+👥 Total Users: ${allUsers.length}
+🔍 Monitoring Users: ${monitoringUsers.length}
+
+<b>Monitoring Users:</b>
+${
+  monitoringUsers
+    .map(
+      (user) =>
+        `• ${user.username || user.firstName || "Unknown"} (${
+          user.productName
+        })`
+    )
+    .join("\n") || "None"
+}
+        `;
+
+        await ctx.reply(message, { parse_mode: "HTML" });
+      } else {
+        await ctx.reply("❌ You don't have permission to use this command.");
       }
     });
 
@@ -477,7 +547,18 @@ Select a product to monitor:
         return;
       }
 
-      const success = this.productManager.setUserProduct(userId, productId);
+      // Get user information
+      const userInfo = {
+        username: ctx.from?.username,
+        firstName: ctx.from?.first_name,
+        lastName: ctx.from?.last_name,
+      };
+
+      const success = this.productManager.setUserProduct(
+        userId,
+        productId,
+        userInfo
+      );
       if (success) {
         const product = this.productManager.getProductById(productId);
         const message = `
@@ -539,26 +620,55 @@ ${error}
     const checkInterval = 5 * 60 * 1000; // 5 minutes
 
     const monitor = async () => {
-      if (!this.isMonitoring) return;
-
       try {
-        // Get all users and their selected products
-        const users = Array.from(this.productManager["userSelections"].keys());
+        console.log(
+          "🔍 [Monitoring] Starting stock check for all monitoring users..."
+        );
 
-        for (const userId of users) {
-          const selection = this.productManager.getUserProduct(userId);
-          if (!selection) continue;
+        // Get all users who are monitoring
+        const monitoringUsers = this.productManager.getMonitoringUsers();
+        console.log(
+          `📊 [Monitoring] Found ${monitoringUsers.length} users monitoring products`
+        );
 
-          const monitor = new StockMonitor(selection.productUrl);
-          const status = await monitor.checkStock();
+        for (const userSelection of monitoringUsers) {
+          try {
+            console.log(
+              `🔍 [Monitoring] Checking stock for user ${
+                userSelection.userId
+              } (${userSelection.username || "Unknown"})`
+            );
 
-          if (status.isInStock && this.shouldSendNotification()) {
-            await this.sendStockNotification(status, selection, userId);
-            this.updateLastNotification();
+            const monitor = new StockMonitor(userSelection.productUrl);
+            const status = await monitor.checkStock();
+
+            console.log(
+              `📊 [Monitoring] Stock status for ${userSelection.productName}: ${
+                status.isInStock ? "IN STOCK" : "OUT OF STOCK"
+              }`
+            );
+
+            // If product is back in stock, send notification
+            if (status.isInStock && this.shouldSendNotification()) {
+              console.log(
+                `🎉 [Monitoring] Product is back in stock! Notifying user ${userSelection.userId}`
+              );
+              await this.sendStockNotification(
+                status,
+                userSelection,
+                userSelection.userId
+              );
+              this.updateLastNotification();
+            }
+          } catch (error) {
+            console.error(
+              `❌ [Monitoring] Error checking stock for user ${userSelection.userId}:`,
+              error
+            );
           }
         }
       } catch (error) {
-        console.error("Error in monitoring loop:", error);
+        console.error("❌ [Monitoring] Error in monitoring loop:", error);
       }
 
       // Schedule next check
@@ -637,6 +747,10 @@ ${this.formatStockStatus(status, selection.productName)}
 
       // Note: Telegraf handles reconnection automatically
       console.log("📡 Bot is ready to receive messages");
+
+      // Start the monitoring service
+      this.startMonitoringLoop();
+      console.log("🔄 [Launch] Monitoring service started for all users");
     } catch (error) {
       console.error("❌ Error launching bot:", error);
 
