@@ -4,6 +4,7 @@ export interface StockStatus {
   price?: string | undefined;
   availability?: string | undefined;
   error?: string | undefined;
+  soldOutAlert?: string | undefined;
 }
 
 export interface NotificationSettings {
@@ -56,10 +57,15 @@ export interface UserProductSelection {
   productName: string;
   productUrl: string;
   lastChecked?: Date;
+  username?: string;
+  firstName?: string;
+  lastName?: string;
+  isMonitoring: boolean;
+  notificationEnabled: boolean;
 }
 
 export interface BotCommand {
   command: string;
   description: string;
   usage?: string;
-} 
+}

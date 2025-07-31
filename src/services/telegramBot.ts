@@ -1,8 +1,13 @@
-import { Telegraf, Context } from 'telegraf';
-import { StockMonitor } from './stockMonitor';
-import { CartAutomation } from './cartAutomation';
-import { ProductManager } from './productManager';
-import { BotConfig, StockStatus, NotificationSettings, BotCommand } from '../types';
+import { Telegraf, Context } from "telegraf";
+import { StockMonitor } from "./stockMonitor";
+import { CartAutomation } from "./cartAutomation";
+import { ProductManager } from "./productManager";
+import {
+  BotConfig,
+  StockStatus,
+  NotificationSettings,
+  BotCommand,
+} from "../types";
 
 export class TelegramBot {
   private bot: Telegraf<Context>;
@@ -11,27 +16,69 @@ export class TelegramBot {
   private productManager: ProductManager;
   private notificationSettings: NotificationSettings;
   private isMonitoring: boolean = false;
+  private isRunning: boolean = false;
 
   constructor(config: BotConfig) {
+    // Create bot with unique session to avoid conflicts
     this.bot = new Telegraf(config.telegramToken);
+
     this.stockMonitor = new StockMonitor(config.productUrl);
     this.productManager = new ProductManager();
     this.notificationSettings = {
       enabled: true,
-      cooldownMinutes: config.notificationCooldownMinutes
+      cooldownMinutes: config.notificationCooldownMinutes,
     };
 
     if (config.amulCredentials) {
-      this.cartAutomation = new CartAutomation(config.amulCredentials, config.productUrl);
+      this.cartAutomation = new CartAutomation(
+        config.amulCredentials,
+        config.productUrl
+      );
     }
 
     this.setupCommands();
     this.setupCallbacks();
+    this.setupErrorHandling();
+  }
+
+  private setupErrorHandling(): void {
+    // Handle bot errors
+    this.bot.catch((err, ctx) => {
+      console.error("❌ Bot error:", err);
+      console.error("❌ Context:", ctx);
+
+      // Try to send error message to user if possible
+      try {
+        ctx
+          .reply(
+            "❌ An error occurred while processing your request. Please try again later."
+          )
+          .catch(console.error);
+      } catch (replyError) {
+        console.error("❌ Failed to send error message:", replyError);
+      }
+    });
+
+    // Handle unhandled bot errors
+    this.bot.use(async (ctx, next) => {
+      try {
+        await next();
+      } catch (error) {
+        console.error("❌ Unhandled bot error:", error);
+        try {
+          await ctx.reply(
+            "❌ An unexpected error occurred. Please try again later."
+          );
+        } catch (replyError) {
+          console.error("❌ Failed to send error message:", replyError);
+        }
+      }
+    });
   }
 
   private setupCommands(): void {
     // Start command
-    this.bot.command('start', async (ctx) => {
+    this.bot.command("start", async (ctx) => {
       const welcomeMessage = `
 🚀 <b>Amul Power of Protein Stock Monitor Bot</b>
 
@@ -49,17 +96,21 @@ Welcome! I'll help you monitor any product from Amul's Power of Protein collecti
 
 <b>Collection:</b> <a href="https://shop.amul.com/en/collection/power-of-protein">Amul Power of Protein</a>
 
-${this.cartAutomation ? '✅ Cart automation enabled' : '❌ Cart automation not configured'}
+${
+  this.cartAutomation
+    ? "✅ Cart automation enabled"
+    : "❌ Cart automation not configured"
+}
 
 Use /products to start browsing and select a product to monitor!
 Use /refresh_catalog to get the latest products from the website.
       `;
-      
-      await ctx.reply(welcomeMessage, { parse_mode: 'HTML' });
+
+      await ctx.reply(welcomeMessage, { parse_mode: "HTML" });
     });
 
     // Products command
-    this.bot.command('products', async (ctx) => {
+    this.bot.command("products", async (ctx) => {
       const message = `
 🛍️ <b>Browse Amul Power of Protein Products</b>
 
@@ -69,123 +120,169 @@ ${this.productManager.formatCategoryList()}
 
 Use the buttons below to browse by category:
       `;
-      
-      await ctx.reply(message, { 
-        parse_mode: 'HTML',
-        reply_markup: this.productManager.getProductSelectionKeyboard()
+
+      await ctx.reply(message, {
+        parse_mode: "HTML",
+        reply_markup: this.productManager.getProductSelectionKeyboard(),
       });
     });
 
     // Status command
-    this.bot.command('status', async (ctx) => {
-      const userId = ctx.from?.id.toString();
-      if (!userId) {
-        await ctx.reply('❌ Unable to identify user.');
-        return;
-      }
-
-      const selection = this.productManager.getUserProduct(userId);
-      if (!selection) {
-        await ctx.reply('❌ No product selected. Use /products to browse and select a product first.');
-        return;
-      }
-
-      await ctx.reply('🔍 Checking stock status...');
-      
+    this.bot.command("status", async (ctx) => {
       try {
-        // Create a new stock monitor for the selected product
-        const monitor = new StockMonitor(selection.productUrl);
-        const status = await monitor.checkStock();
-        const message = this.formatStockStatus(status, selection.productName);
-        await ctx.reply(message, { parse_mode: 'HTML' });
-        
-        // Update last checked time
-        this.productManager.updateUserProductLastChecked(userId);
+        const userId = ctx.from?.id.toString();
+        if (!userId) {
+          await ctx.reply("❌ Unable to identify user.");
+          return;
+        }
+
+        const selection = this.productManager.getUserProduct(userId);
+        if (!selection) {
+          await ctx.reply(
+            "❌ No product selected. Use /products to browse and select a product first."
+          );
+          return;
+        }
+
+        await ctx.reply("🔍 Checking stock status...");
+
+        try {
+          console.log(`🔍 Starting stock check for: ${selection.productUrl}`);
+          // Create a new stock monitor for the selected product
+          const monitor = new StockMonitor(selection.productUrl);
+          console.log("📊 Stock monitor created, checking stock...");
+          const status = await monitor.checkStock();
+          console.log("📊 Stock check result:", status);
+          const message = this.formatStockStatus(status, selection.productName);
+          await ctx.reply(message, { parse_mode: "HTML" });
+
+          // Update last checked time
+          this.productManager.updateUserProductLastChecked(userId);
+        } catch (error) {
+          console.error("❌ Error in stock check:", error);
+          const errorMessage =
+            error instanceof Error ? error.message : "Unknown error";
+          await ctx.reply(
+            `❌ Error checking stock: ${errorMessage}\n\nPlease try again later or contact support if the issue persists.`
+          );
+        }
       } catch (error) {
-        await ctx.reply(`❌ Error checking stock: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        console.error("❌ Error in status command:", error);
+        try {
+          await ctx.reply(
+            "❌ An error occurred while processing your request. Please try again."
+          );
+        } catch (replyError) {
+          console.error("❌ Failed to send error message:", replyError);
+        }
       }
     });
 
     // Current product command
-    this.bot.command('current', async (ctx) => {
+    this.bot.command("current", async (ctx) => {
       const userId = ctx.from?.id.toString();
       if (!userId) {
-        await ctx.reply('❌ Unable to identify user.');
+        await ctx.reply("❌ Unable to identify user.");
         return;
       }
 
       const message = this.productManager.formatUserSelection(userId);
-      await ctx.reply(message, { parse_mode: 'HTML' });
+      await ctx.reply(message, { parse_mode: "HTML" });
     });
 
     // Start monitoring command
-    this.bot.command('start_monitoring', async (ctx) => {
+    this.bot.command("start_monitoring", async (ctx) => {
       const userId = ctx.from?.id.toString();
       if (!userId) {
-        await ctx.reply('❌ Unable to identify user.');
+        await ctx.reply("❌ Unable to identify user.");
         return;
       }
 
       const selection = this.productManager.getUserProduct(userId);
       if (!selection) {
-        await ctx.reply('❌ No product selected. Use /products to browse and select a product first.');
+        await ctx.reply(
+          "❌ No product selected. Use /products to browse and select a product first."
+        );
         return;
       }
 
       if (this.isMonitoring) {
-        await ctx.reply('⚠️ Monitoring is already active!');
+        await ctx.reply("⚠️ Monitoring is already active!");
         return;
       }
 
       this.isMonitoring = true;
-      await ctx.reply(`✅ Stock monitoring started for <b>${selection.productName}</b>! I'll notify you when the product is back in stock.`, { parse_mode: 'HTML' });
-      
+      await ctx.reply(
+        `✅ Stock monitoring started for <b>${selection.productName}</b>! I'll notify you when the product is back in stock.`,
+        { parse_mode: "HTML" }
+      );
+
       // Start the monitoring loop
       this.startMonitoringLoop();
     });
 
     // Stop monitoring command
-    this.bot.command('stop_monitoring', async (ctx) => {
+    this.bot.command("stop_monitoring", async (ctx) => {
       this.isMonitoring = false;
-      await ctx.reply('⏹️ Stock monitoring stopped.');
+      await ctx.reply("⏹️ Stock monitoring stopped.");
     });
 
     // Add to cart command
-    this.bot.command('addtocart', async (ctx) => {
+    this.bot.command("addtocart", async (ctx) => {
       const userId = ctx.from?.id.toString();
       if (!userId) {
-        await ctx.reply('❌ Unable to identify user.');
+        await ctx.reply("❌ Unable to identify user.");
         return;
       }
 
       const selection = this.productManager.getUserProduct(userId);
       if (!selection) {
-        await ctx.reply('❌ No product selected. Use /products to browse and select a product first.');
+        await ctx.reply(
+          "❌ No product selected. Use /products to browse and select a product first."
+        );
         return;
       }
 
       if (!this.cartAutomation) {
-        await ctx.reply('❌ Cart automation is not configured. Please set up your Amul credentials in the environment variables.');
+        await ctx.reply(
+          "❌ Cart automation is not configured. Please set up your Amul credentials in the environment variables."
+        );
         return;
       }
 
-      await ctx.reply('🛒 Attempting to add product to cart...');
-      
+      await ctx.reply("🛒 Attempting to add product to cart...");
+
       try {
         // Create a new cart automation for the selected product
-        const cart = new CartAutomation(this.cartAutomation['credentials'], selection.productUrl);
+        const cart = new CartAutomation(
+          this.cartAutomation["credentials"],
+          selection.productUrl
+        );
         const result = await cart.addToCart();
-        const message = result.success 
-          ? `✅ ${result.message}\n${result.cartUrl ? `Cart URL: ${result.cartUrl}` : ''}`
+        const message = result.success
+          ? `✅ ${result.message}\n${
+              result.cartUrl ? `Cart URL: ${result.cartUrl}` : ""
+            }`
           : `❌ ${result.message}`;
-        
+
         await ctx.reply(message);
       } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-        if (errorMessage.includes('OTP') || errorMessage.includes('verification')) {
-          await ctx.reply(`❌ Authentication required: ${errorMessage}\n\n💡 The cart automation requires mobile OTP verification and possibly PIN code entry. Please complete the login process manually on the Amul website.`);
-        } else if (errorMessage.includes('PIN') || errorMessage.includes('pincode')) {
-          await ctx.reply(`❌ PIN verification required: ${errorMessage}\n\n💡 Please enter your PIN code on the Amul website to complete the authentication.`);
+        const errorMessage =
+          error instanceof Error ? error.message : "Unknown error";
+        if (
+          errorMessage.includes("OTP") ||
+          errorMessage.includes("verification")
+        ) {
+          await ctx.reply(
+            `❌ Authentication required: ${errorMessage}\n\n💡 The cart automation requires mobile OTP verification and possibly PIN code entry. Please complete the login process manually on the Amul website.`
+          );
+        } else if (
+          errorMessage.includes("PIN") ||
+          errorMessage.includes("pincode")
+        ) {
+          await ctx.reply(
+            `❌ PIN verification required: ${errorMessage}\n\n💡 Please enter your PIN code on the Amul website to complete the authentication.`
+          );
         } else {
           await ctx.reply(`❌ Error adding to cart: ${errorMessage}`);
         }
@@ -193,7 +290,7 @@ Use the buttons below to browse by category:
     });
 
     // Help command
-    this.bot.command('help', async (ctx) => {
+    this.bot.command("help", async (ctx) => {
       const helpMessage = `
 📖 <b>Detailed Help</b>
 
@@ -228,70 +325,155 @@ Use the buttons below to browse by category:
 • <a href="https://shop.amul.com/en/collection/power-of-protein">Amul Power of Protein</a>
 • Includes: Buttermilk, Milk, Curd, Paneer, Cheese, Ghee, Butter
       `;
-      
-      await ctx.reply(helpMessage, { parse_mode: 'HTML' });
+
+      await ctx.reply(helpMessage, { parse_mode: "HTML" });
     });
 
     // Catalog status command
-    this.bot.command('catalog_status', async (ctx) => {
+    this.bot.command("catalog_status", async (ctx) => {
       const message = this.productManager.formatCatalogStatus();
-      await ctx.reply(message, { parse_mode: 'HTML' });
+      await ctx.reply(message, { parse_mode: "HTML" });
     });
 
     // Refresh catalog command
-    this.bot.command('refresh_catalog', async (ctx) => {
-      console.log('[Telegram] /refresh_catalog command received');
-      await ctx.reply('🔄 Refreshing product catalog from Amul website... This may take a few minutes.');
-      console.log('[Telegram] Sent initial reply');
+    this.bot.command("refresh_catalog", async (ctx) => {
+      console.log("[Telegram] /refresh_catalog command received");
+      await ctx.reply(
+        "🔄 Refreshing product catalog from Amul website... This may take a few minutes."
+      );
+      console.log("[Telegram] Sent initial reply");
       try {
         const result = await this.productManager.refreshCatalog();
-        console.log('[Telegram] refreshCatalog result:', result);
-        await ctx.reply(result.message, { parse_mode: 'HTML' });
-        console.log('[Telegram] Sent result message');
+        console.log("[Telegram] refreshCatalog result:", result);
+        await ctx.reply(result.message, { parse_mode: "HTML" });
+        console.log("[Telegram] Sent result message");
         if (result.success) {
           const statusMessage = this.productManager.formatCatalogStatus();
-          await ctx.reply(statusMessage, { parse_mode: 'HTML' });
-          console.log('[Telegram] Sent catalog status');
+          await ctx.reply(statusMessage, { parse_mode: "HTML" });
+          console.log("[Telegram] Sent catalog status");
         }
       } catch (error) {
-        console.error('[Telegram] Error in /refresh_catalog:', error);
-        await ctx.reply(`❌ Error refreshing catalog: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        console.error("[Telegram] Error in /refresh_catalog:", error);
+        await ctx.reply(
+          `❌ Error refreshing catalog: ${
+            error instanceof Error ? error.message : "Unknown error"
+          }`
+        );
       }
     });
 
     // Handle unknown commands
-    this.bot.on('text', async (ctx) => {
-      await ctx.reply('❓ Unknown command. Use /help to see available commands.');
+    this.bot.on("text", async (ctx) => {
+      await ctx.reply(
+        "❓ Unknown command. Use /help to see available commands."
+      );
     });
   }
 
   private setupCallbacks(): void {
     // Handle category selection
     this.bot.action(/^category_(.+)$/, async (ctx) => {
-      const category = ctx.match[1];
-      const products = this.productManager.getProductsByCategory(category);
-      
-      const message = `
+      try {
+        console.log(`[Telegram] Category selection: ${ctx.match[1]}`);
+        const category = ctx.match[1];
+        const products = this.productManager.getProductsByCategory(category);
+        console.log(
+          `[Telegram] Found ${products.length} products for category: ${category}`
+        );
+
+        const formattedList = this.productManager.formatProductList(
+          products,
+          1,
+          10
+        );
+        const message = `
 🛍️ <b>${category} Products</b>
 
-${this.productManager.formatProductList(products)}
+${formattedList.text}
 
 Select a product to monitor:
-      `;
-      
-      await ctx.editMessageText(message, { 
-        parse_mode: 'HTML',
-        reply_markup: this.productManager.getProductsKeyboard(category)
-      });
+        `;
+
+        const keyboard = this.productManager.getProductsKeyboard(
+          category,
+          1,
+          10
+        );
+        console.log(
+          `[Telegram] Created keyboard with ${keyboard.inline_keyboard.length} buttons`
+        );
+
+        await ctx.editMessageText(message, {
+          parse_mode: "HTML",
+          reply_markup: keyboard,
+        });
+        console.log(
+          `[Telegram] Successfully sent category products for: ${category}`
+        );
+      } catch (error) {
+        console.error("[Telegram] Error in category selection:", error);
+        await ctx.reply(
+          `❌ Error loading products for category: ${
+            error instanceof Error ? error.message : "Unknown error"
+          }`
+        );
+      }
+    });
+
+    // Handle category pagination
+    this.bot.action(/^category_page_(.+)_(\d+)$/, async (ctx) => {
+      try {
+        const category = ctx.match[1];
+        const page = parseInt(ctx.match[2]);
+        console.log(
+          `[Telegram] Category pagination: ${category}, page ${page}`
+        );
+
+        const products = this.productManager.getProductsByCategory(category);
+        const formattedList = this.productManager.formatProductList(
+          products,
+          page,
+          10
+        );
+
+        const message = `
+🛍️ <b>${category} Products</b>
+
+${formattedList.text}
+
+Select a product to monitor:
+        `;
+
+        const keyboard = this.productManager.getProductsKeyboard(
+          category,
+          page,
+          10
+        );
+
+        await ctx.editMessageText(message, {
+          parse_mode: "HTML",
+          reply_markup: keyboard,
+        });
+        console.log(
+          `[Telegram] Successfully sent category page ${page} for: ${category}`
+        );
+      } catch (error) {
+        console.error("[Telegram] Error in category pagination:", error);
+        await ctx.reply(
+          `❌ Error loading page: ${
+            error instanceof Error ? error.message : "Unknown error"
+          }`
+        );
+      }
     });
 
     // Handle product selection
     this.bot.action(/^product_(.+)$/, async (ctx) => {
       const productId = ctx.match[1];
       const userId = ctx.from?.id.toString();
-      
+
       if (!userId) {
-        await ctx.reply('❌ Unable to identify user.');
+        await ctx.reply("❌ Unable to identify user.");
         return;
       }
 
@@ -304,22 +486,22 @@ Select a product to monitor:
 <b>${product?.name}</b>
 📝 ${product?.description}
 🏷️ Category: ${product?.category}
-💰 Price: ${product?.price || 'Not available'}
+💰 Price: ${product?.price || "Not available"}
 
 You can now:
 • Use /status to check current stock
 • Use /start_monitoring to begin automatic monitoring
 • Use /addtocart to add to cart (if configured)
         `;
-        
-        await ctx.editMessageText(message, { parse_mode: 'HTML' });
+
+        await ctx.editMessageText(message, { parse_mode: "HTML" });
       } else {
-        await ctx.reply('❌ Failed to select product. Please try again.');
+        await ctx.reply("❌ Failed to select product. Please try again.");
       }
     });
 
     // Handle back to categories
-    this.bot.action('back_to_categories', async (ctx) => {
+    this.bot.action("back_to_categories", async (ctx) => {
       const message = `
 🛍️ <b>Browse Amul Power of Protein Products</b>
 
@@ -329,19 +511,19 @@ ${this.productManager.formatCategoryList()}
 
 Use the buttons below to browse by category:
       `;
-      
-      await ctx.editMessageText(message, { 
-        parse_mode: 'HTML',
-        reply_markup: this.productManager.getProductSelectionKeyboard()
+
+      await ctx.editMessageText(message, {
+        parse_mode: "HTML",
+        reply_markup: this.productManager.getProductSelectionKeyboard(),
       });
     });
   }
 
   private formatStockStatus(status: StockStatus, productName: string): string {
-    const emoji = status.isInStock ? '✅' : '❌';
-    const statusText = status.isInStock ? 'IN STOCK' : 'OUT OF STOCK';
-    const price = status.price ? `\n💰 Price: ${status.price}` : '';
-    const error = status.error ? `\n⚠️ Error: ${status.error}` : '';
+    const emoji = status.isInStock ? "✅" : "❌";
+    const statusText = status.isInStock ? "IN STOCK" : "OUT OF STOCK";
+    const price = status.price ? `\n💰 Price: ${status.price}` : "";
+    const error = status.error ? `\n⚠️ Error: ${status.error}` : "";
     const time = status.lastChecked.toLocaleString();
 
     return `
@@ -355,28 +537,28 @@ ${error}
 
   private async startMonitoringLoop(): Promise<void> {
     const checkInterval = 5 * 60 * 1000; // 5 minutes
-    
+
     const monitor = async () => {
       if (!this.isMonitoring) return;
 
       try {
         // Get all users and their selected products
-        const users = Array.from(this.productManager['userSelections'].keys());
-        
+        const users = Array.from(this.productManager["userSelections"].keys());
+
         for (const userId of users) {
           const selection = this.productManager.getUserProduct(userId);
           if (!selection) continue;
 
           const monitor = new StockMonitor(selection.productUrl);
           const status = await monitor.checkStock();
-          
+
           if (status.isInStock && this.shouldSendNotification()) {
             await this.sendStockNotification(status, selection, userId);
             this.updateLastNotification();
           }
         }
       } catch (error) {
-        console.error('Error in monitoring loop:', error);
+        console.error("Error in monitoring loop:", error);
       }
 
       // Schedule next check
@@ -389,12 +571,13 @@ ${error}
 
   private shouldSendNotification(): boolean {
     if (!this.notificationSettings.enabled) return false;
-    
+
     if (!this.notificationSettings.lastNotification) return true;
-    
+
     const cooldownMs = this.notificationSettings.cooldownMinutes * 60 * 1000;
-    const timeSinceLastNotification = Date.now() - this.notificationSettings.lastNotification.getTime();
-    
+    const timeSinceLastNotification =
+      Date.now() - this.notificationSettings.lastNotification.getTime();
+
     return timeSinceLastNotification >= cooldownMs;
   }
 
@@ -402,7 +585,11 @@ ${error}
     this.notificationSettings.lastNotification = new Date();
   }
 
-  private async sendStockNotification(status: StockStatus, selection: any, userId: string): Promise<void> {
+  private async sendStockNotification(
+    status: StockStatus,
+    selection: any,
+    userId: string
+  ): Promise<void> {
     const message = `
 🎉 <b>PRODUCT IS BACK IN STOCK!</b>
 
@@ -418,27 +605,111 @@ ${this.formatStockStatus(status, selection.productName)}
     `;
 
     try {
-      await this.bot.telegram.sendMessage(userId, message, { parse_mode: 'HTML' });
+      await this.bot.telegram.sendMessage(userId, message, {
+        parse_mode: "HTML",
+      });
     } catch (error) {
-      console.error('Error sending notification:', error);
+      console.error("Error sending notification:", error);
     }
   }
 
   async launch(): Promise<void> {
     try {
+      console.log("🚀 Attempting to launch Telegram bot...");
+
+      // Clear any existing webhook first
+      try {
+        await this.bot.telegram.deleteWebhook();
+        console.log("✅ Cleared existing webhook");
+      } catch (error) {
+        console.log("ℹ️ No webhook to clear or error clearing webhook:", error);
+      }
+
+      // Launch the bot without timeout to see actual errors
       await this.bot.launch();
-      console.log('🤖 Telegram bot started successfully!');
-      
+
+      this.isRunning = true;
+      console.log("🤖 Telegram bot started successfully!");
+
       // Graceful stop
-      process.once('SIGINT', () => this.bot.stop('SIGINT'));
-      process.once('SIGTERM', () => this.bot.stop('SIGTERM'));
+      process.once("SIGINT", () => this.stop());
+      process.once("SIGTERM", () => this.stop());
+
+      // Note: Telegraf handles reconnection automatically
+      console.log("📡 Bot is ready to receive messages");
     } catch (error) {
-      console.error('Error launching bot:', error);
+      console.error("❌ Error launching bot:", error);
+
+      // Handle specific error types
+      if (error instanceof Error) {
+        if (
+          error.message.includes("409") ||
+          error.message.includes("Conflict")
+        ) {
+          console.error("❌ Bot instance conflict detected!");
+          console.error("❌ Another bot instance is already running.");
+          console.error(
+            "💡 Solution: Stop all other bot instances and try again."
+          );
+          console.error(
+            "💡 You can use: pkill -f 'ts-node' && pkill -f 'node.*index'"
+          );
+        } else if (
+          error.message.includes("ENOTFOUND") ||
+          error.message.includes("ECONNRESET")
+        ) {
+          console.error(
+            "❌ Network connectivity issue. Please check your internet connection."
+          );
+          console.error("❌ Make sure you can reach api.telegram.org");
+        } else if (error.message.includes("timeout")) {
+          console.error(
+            "❌ Bot launch timed out. Check your internet connection."
+          );
+        } else {
+          console.error("❌ Unknown error during bot launch");
+        }
+      }
+
       throw error;
     }
   }
 
-  stop(): void {
-    this.bot.stop();
+  private async handleReconnection(): Promise<void> {
+    if (!this.isRunning) return;
+
+    console.log("🔄 Attempting to reconnect to Telegram...");
+
+    try {
+      await this.bot.stop();
+      await new Promise((resolve) => setTimeout(resolve, 5000)); // Wait 5 seconds
+      await this.bot.launch();
+      console.log("✅ Successfully reconnected to Telegram");
+    } catch (error) {
+      console.error("❌ Failed to reconnect:", error);
+      // Try again in 30 seconds
+      setTimeout(() => this.handleReconnection(), 30000);
+    }
   }
-} 
+
+  stop(): void {
+    this.isRunning = false;
+    this.isMonitoring = false;
+    this.bot.stop();
+    console.log("🛑 Bot stopped");
+  }
+
+  private async checkNetworkConnectivity(): Promise<boolean> {
+    try {
+      const { default: fetch } = await import("node-fetch");
+      const response = await fetch("https://api.telegram.org", {
+        method: "HEAD",
+        timeout: 10000,
+      });
+      return response.ok;
+    } catch (error) {
+      console.error("❌ Network connectivity check failed:", error);
+      return false;
+    }
+  }
+}

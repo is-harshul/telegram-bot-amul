@@ -7,7 +7,11 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "dev": "ts-node src/index.ts",
-    "watch": "nodemon --exec ts-node src/index.ts"
+    "watch": "nodemon --exec ts-node src/index.ts",
+    "test-network": "ts-node test-network.ts",
+    "test-token": "ts-node test-bot-token.ts",
+    "check-webhook": "ts-node check-webhook.ts",
+    "cleanup": "./cleanup.sh"
   },
   "keywords": [
     "telegram",
@@ -23,6 +27,7 @@
     "cheerio": "^1.0.0-rc.12",
     "dotenv": "^16.3.1",
     "node-cron": "^3.0.3",
+    "node-fetch": "^2.7.0",
     "puppeteer": "^24.11.2",
     "telegraf": "^4.15.6"
   },

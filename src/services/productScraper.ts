@@ -6,6 +6,187 @@ export class ProductScraper {
     "https://shop.amul.com/en/collection/power-of-protein";
   private isScraping = false;
 
+  // Reusable method to handle PIN code modal
+  private async handlePinCodeModal(page: any): Promise<void> {
+    try {
+      console.log("🔍 Looking for PIN code modal...");
+
+      // Use the most specific selector for the input
+      let foundSelector = "";
+      const pinSelector = "#search";
+      let pinInput = null;
+      try {
+        pinInput = await page.waitForSelector(pinSelector, { timeout: 3000 });
+        if (pinInput) {
+          foundSelector = pinSelector;
+          console.log(`✅ Found PIN input with selector: ${pinSelector}`);
+        }
+      } catch (e) {
+        // fallback to previous logic if not found
+      }
+      if (!pinInput) {
+        // fallback to previous logic
+        const pinSelectors = [
+          'input[type="text"]',
+          'input[type="number"]',
+          'input[name*="pincode"]',
+          'input[name*="pin"]',
+          'input[placeholder*="PIN" i]',
+          'input[placeholder*="pincode" i]',
+          'input[placeholder*="Enter" i]',
+          'input[class*="pincode"]',
+          'input[class*="pin"]',
+          'input[id*="pincode"]',
+          'input[id*="pin"]',
+          ".pincode-input input",
+          ".pin-input input",
+          "input",
+        ];
+        for (const selector of pinSelectors) {
+          try {
+            pinInput = await page.waitForSelector(selector, { timeout: 2000 });
+            if (pinInput) {
+              foundSelector = selector;
+              console.log(`✅ Found PIN input with selector: ${selector}`);
+              break;
+            }
+          } catch (e) {
+            // Continue to next selector
+          }
+        }
+      }
+
+      if (pinInput) {
+        // Wait for the modal to be fully visible and interactive
+        console.log("⏳ Waiting for PIN modal to be ready...");
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+
+        // Use page.evaluate to dispatch a real click event on the input
+        console.log("🖱️ Dispatching real click event on PIN input...");
+        await page.evaluate((selector: string) => {
+          const input = document.querySelector(selector);
+          if (input) {
+            const rect = input.getBoundingClientRect();
+            const clickEvent = new MouseEvent("click", {
+              bubbles: true,
+              cancelable: true,
+              clientX: rect.left + rect.width / 2,
+              clientY: rect.top + rect.height / 2,
+            });
+            input.dispatchEvent(clickEvent);
+            (input as HTMLElement).focus();
+          }
+        }, foundSelector);
+        await new Promise((resolve) => setTimeout(resolve, 500));
+
+        // Set the value directly and dispatch input/change events
+        console.log(
+          "⌨️ Setting PIN code value directly and dispatching events..."
+        );
+        await page.evaluate((selector: string) => {
+          const input = document.querySelector(
+            selector
+          ) as HTMLInputElement | null;
+          if (input) {
+            input.value = "135001";
+            input.dispatchEvent(new Event("input", { bubbles: true }));
+            input.dispatchEvent(new Event("change", { bubbles: true }));
+          }
+        }, foundSelector);
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+
+        // Wait for the dropdown option to appear (up to 2 seconds)
+        console.log("🔍 Waiting for location dropdown option...");
+        await page.waitForSelector("#automatic .searchitem-name .item-name", {
+          timeout: 2000,
+        });
+
+        // Find and click the correct dropdown option
+        const dropdownClicked = await page.evaluate(() => {
+          const items = Array.from(
+            document.querySelectorAll("#automatic .searchitem-name")
+          );
+          for (const item of items) {
+            const text = item.querySelector(".item-name")?.textContent?.trim();
+            if (text === "135001") {
+              (item as HTMLElement).click();
+              return true;
+            }
+          }
+          return false;
+        });
+        if (dropdownClicked) {
+          console.log("🖱️ Clicked dropdown option for 135001");
+        } else {
+          console.log(
+            "⚠️ Could not find dropdown option for 135001, trying Enter..."
+          );
+          await page.keyboard.press("Enter");
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+
+        // Try to find and click the submit button (if still needed)
+        const buttonSelectors = [
+          'button[type="submit"]',
+          'button:contains("Submit")',
+          'button:contains("Continue")',
+          'button:contains("Go")',
+          'button:contains("Check")',
+          ".btn",
+          ".submit",
+          '[class*="submit"]',
+          '[class*="confirm"]',
+          '[class*="continue"]',
+          "button",
+        ];
+
+        let submitButton = null;
+        for (const btnSelector of buttonSelectors) {
+          try {
+            submitButton = await page.$(btnSelector);
+            if (submitButton) {
+              console.log(
+                `✅ Found submit button with selector: ${btnSelector}`
+              );
+              break;
+            }
+          } catch (e) {
+            // Continue to next selector
+          }
+        }
+
+        if (submitButton) {
+          console.log("🖱️ Clicking submit button...");
+          await submitButton.click();
+          await new Promise((resolve) => setTimeout(resolve, 3000)); // Wait for modal to close
+          console.log("✅ PIN code submitted successfully");
+        }
+
+        // Wait for the modal to disappear
+        console.log("⏳ Waiting for PIN modal to disappear...");
+        await page.waitForFunction(
+          () => {
+            const modal = document
+              .querySelector('input[type="text"]')
+              ?.closest(
+                'div[role="dialog"], .modal, .MuiDialog-root, .ant-modal, .ReactModal__Content'
+              );
+            return !modal || (modal as HTMLElement).offsetParent === null;
+          },
+          { timeout: 10000 }
+        );
+        console.log("✅ PIN modal closed, proceeding...");
+      } else {
+        console.log("ℹ️ No PIN code input found, proceeding...");
+      }
+    } catch (e) {
+      console.log(
+        "ℹ️ PIN code modal handling failed:",
+        e instanceof Error ? e.message : "Unknown error"
+      );
+    }
+  }
+
   async scrapeProducts(): Promise<AmulProduct[]> {
     if (this.isScraping) {
       console.log("[scrapeProducts] Already scraping, skipping...");
@@ -34,189 +215,7 @@ export class ProductScraper {
       await new Promise((resolve) => setTimeout(resolve, 3000));
 
       // Handle PIN code modal if present
-      try {
-        console.log("🔍 Looking for PIN code modal...");
-
-        // Use the most specific selector for the input
-        let foundSelector = "";
-        const pinSelector = "#search";
-        let pinInput = null;
-        try {
-          pinInput = await page.waitForSelector(pinSelector, { timeout: 3000 });
-          if (pinInput) {
-            foundSelector = pinSelector;
-            console.log(`✅ Found PIN input with selector: ${pinSelector}`);
-          }
-        } catch (e) {
-          // fallback to previous logic if not found
-        }
-        if (!pinInput) {
-          // fallback to previous logic
-          const pinSelectors = [
-            'input[type="text"]',
-            'input[type="number"]',
-            'input[name*="pincode"]',
-            'input[name*="pin"]',
-            'input[placeholder*="PIN" i]',
-            'input[placeholder*="pincode" i]',
-            'input[placeholder*="Enter" i]',
-            'input[class*="pincode"]',
-            'input[class*="pin"]',
-            'input[id*="pincode"]',
-            'input[id*="pin"]',
-            ".pincode-input input",
-            ".pin-input input",
-            "input",
-          ];
-          for (const selector of pinSelectors) {
-            try {
-              pinInput = await page.waitForSelector(selector, {
-                timeout: 2000,
-              });
-              if (pinInput) {
-                foundSelector = selector;
-                console.log(`✅ Found PIN input with selector: ${selector}`);
-                break;
-              }
-            } catch (e) {
-              // Continue to next selector
-            }
-          }
-        }
-
-        if (pinInput) {
-          // Wait for the modal to be fully visible and interactive
-          console.log("⏳ Waiting for PIN modal to be ready...");
-          await new Promise((resolve) => setTimeout(resolve, 1000));
-
-          // Use page.evaluate to dispatch a real click event on the input
-          console.log("🖱️ Dispatching real click event on PIN input...");
-          await page.evaluate((selector) => {
-            const input = document.querySelector(selector);
-            if (input) {
-              const rect = input.getBoundingClientRect();
-              const clickEvent = new MouseEvent("click", {
-                bubbles: true,
-                cancelable: true,
-                clientX: rect.left + rect.width / 2,
-                clientY: rect.top + rect.height / 2,
-              });
-              input.dispatchEvent(clickEvent);
-              (input as HTMLElement).focus();
-            }
-          }, foundSelector);
-          await new Promise((resolve) => setTimeout(resolve, 500));
-
-          // Set the value directly and dispatch input/change events
-          console.log(
-            "⌨️ Setting PIN code value directly and dispatching events..."
-          );
-          await page.evaluate((selector) => {
-            const input = document.querySelector(
-              selector
-            ) as HTMLInputElement | null;
-            if (input) {
-              input.value = "135001";
-              input.dispatchEvent(new Event("input", { bubbles: true }));
-              input.dispatchEvent(new Event("change", { bubbles: true }));
-            }
-          }, foundSelector);
-          await new Promise((resolve) => setTimeout(resolve, 1000));
-
-          // Wait for the dropdown option to appear (up to 2 seconds)
-          console.log("🔍 Waiting for location dropdown option...");
-          await page.waitForSelector("#automatic .searchitem-name .item-name", {
-            timeout: 2000,
-          });
-
-          // Find and click the correct dropdown option
-          const dropdownClicked = await page.evaluate(() => {
-            const items = Array.from(
-              document.querySelectorAll("#automatic .searchitem-name")
-            );
-            for (const item of items) {
-              const text = item
-                .querySelector(".item-name")
-                ?.textContent?.trim();
-              if (text === "135001") {
-                (item as HTMLElement).click();
-                return true;
-              }
-            }
-            return false;
-          });
-          if (dropdownClicked) {
-            console.log("🖱️ Clicked dropdown option for 135001");
-          } else {
-            console.log(
-              "⚠️ Could not find dropdown option for 135001, trying Enter..."
-            );
-            await page.keyboard.press("Enter");
-          }
-          await new Promise((resolve) => setTimeout(resolve, 1000));
-
-          // Try to find and click the submit button (if still needed)
-          const buttonSelectors = [
-            'button[type="submit"]',
-            'button:contains("Submit")',
-            'button:contains("Continue")',
-            'button:contains("Go")',
-            'button:contains("Check")',
-            ".btn",
-            ".submit",
-            '[class*="submit"]',
-            '[class*="confirm"]',
-            '[class*="continue"]',
-            "button",
-          ];
-
-          let submitButton = null;
-          for (const btnSelector of buttonSelectors) {
-            try {
-              submitButton = await page.$(btnSelector);
-              if (submitButton) {
-                console.log(
-                  `✅ Found submit button with selector: ${btnSelector}`
-                );
-                break;
-              }
-            } catch (e) {
-              // Continue to next selector
-            }
-          }
-
-          if (submitButton) {
-            console.log("🖱️ Clicking submit button...");
-            await submitButton.click();
-            await new Promise((resolve) => setTimeout(resolve, 3000)); // Wait for modal to close
-            console.log("✅ PIN code submitted successfully");
-          }
-
-          // Wait for the modal to disappear
-          console.log("⏳ Waiting for PIN modal to disappear...");
-          await page.waitForFunction(
-            () => {
-              const modal = document
-                .querySelector('input[type="text"]')
-                ?.closest(
-                  'div[role="dialog"], .modal, .MuiDialog-root, .ant-modal, .ReactModal__Content'
-                );
-              return !modal || (modal as HTMLElement).offsetParent === null;
-            },
-            { timeout: 10000 }
-          );
-          console.log("✅ PIN modal closed, proceeding to scrape products.");
-        } else {
-          console.log(
-            "ℹ️ No PIN code input found, proceeding with scraping..."
-          );
-        }
-      } catch (e) {
-        console.log(
-          "ℹ️ PIN code modal handling failed:",
-          e instanceof Error ? e.message : "Unknown error"
-        );
-      }
+      await this.handlePinCodeModal(page);
 
       // Wait for the product grid/list to load
       console.log("🔍 Waiting for products to load...");
@@ -344,7 +343,7 @@ export class ProductScraper {
     productUrl: string
   ): Promise<Partial<AmulProduct>> {
     const browser = await puppeteer.launch({
-      headless: false,
+      headless: true,
       args: ["--no-sandbox", "--disable-setuid-sandbox"],
     });
 
@@ -359,6 +358,9 @@ export class ProductScraper {
         timeout: 30000,
       });
       await new Promise((resolve) => setTimeout(resolve, 3000));
+
+      // Handle PIN code modal if present
+      await this.handlePinCodeModal(page);
 
       const details = await page.evaluate(() => {
         const nameElement = document.querySelector(
