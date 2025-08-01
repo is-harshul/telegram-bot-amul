@@ -1,7 +1,8 @@
 import { Telegraf, Context } from "telegraf";
 import { StockMonitor } from "./stockMonitor";
-import { CartAutomation } from "./cartAutomation";
 import { ProductManager } from "./productManager";
+import { DatabaseService } from "./databaseService";
+import { PincodeValidator } from "./pincodeValidator";
 import {
   BotConfig,
   StockStatus,
@@ -13,8 +14,8 @@ import { config } from "../config";
 export class TelegramBot {
   private bot: Telegraf<Context>;
   private stockMonitor: StockMonitor;
-  private cartAutomation?: CartAutomation;
   private productManager: ProductManager;
+  private dbService: DatabaseService;
   private notificationSettings: NotificationSettings;
   private isMonitoring: boolean = false;
   private isRunning: boolean = false;
@@ -25,17 +26,11 @@ export class TelegramBot {
 
     this.stockMonitor = new StockMonitor(config.productUrl);
     this.productManager = new ProductManager();
+    this.dbService = DatabaseService.getInstance();
     this.notificationSettings = {
       enabled: true,
       cooldownMinutes: config.notificationCooldownMinutes,
     };
-
-    if (config.amulCredentials) {
-      this.cartAutomation = new CartAutomation(
-        config.amulCredentials,
-        config.productUrl
-      );
-    }
 
     this.setupCommands();
     this.setupCallbacks();
@@ -78,33 +73,96 @@ export class TelegramBot {
   }
 
   private setupCommands(): void {
+    // Middleware to automatically register all users and check pincode
+    this.bot.use(async (ctx, next) => {
+      const userId = ctx.from?.id.toString();
+      if (userId) {
+        try {
+          // Automatically register/update user for any interaction
+          await this.dbService.createOrUpdateUser({
+            telegramId: userId,
+            username: ctx.from?.username,
+            firstName: ctx.from?.first_name,
+            lastName: ctx.from?.last_name,
+          });
+
+          // Check if user has pincode set
+          const user = await this.dbService.getUser(userId);
+          const text =
+            ctx.message && "text" in ctx.message ? ctx.message.text : "";
+
+          // Skip pincode check for pincode commands and actual pincode input
+          const isPincodeCommand =
+            text.startsWith("/pincode") || text.startsWith("/update_pincode");
+          const isPincodeInput = /^\d{6}$/.test(text);
+
+          if (!user?.pincode && !isPincodeCommand && !isPincodeInput) {
+            // User doesn't have pincode set, ask for it
+            const pincodeMessage = `
+📍 <b>Delivery Pincode Required</b>
+
+To use this bot, please set your delivery pincode first.
+
+Please send your 6-digit pincode (e.g., 110001) so I can check stock availability for your area.
+
+<b>🔍 Pincode Validation:</b>
+• Validates with India Post API
+• Shows location details (Post Office, District, State)
+• Ensures accurate delivery area
+
+This pincode will be used for:
+• Stock availability checking
+• Delivery location verification
+• Accurate stock status for your area
+
+<b>Commands:</b>
+• /pincode - View your delivery pincode
+• /update_pincode - Update your delivery pincode
+
+💡 <i>If you find this bot helpful, use /support to contribute to its development or /connect_with_me to reach out!</i>
+            `;
+
+            await ctx.reply(pincodeMessage, { parse_mode: "HTML" });
+            return; // Don't proceed with the original command
+          }
+        } catch (error) {
+          console.error("❌ Error in middleware:", error);
+        }
+      }
+      await next();
+    });
+
     // Start command
     this.bot.command("start", async (ctx) => {
+      const userId = ctx.from?.id.toString();
+      if (!userId) {
+        await ctx.reply("❌ Unable to identify user.");
+        return;
+      }
+
+      // Get user info (user is already registered by middleware)
+      const user = await this.dbService.getUser(userId);
+
       const welcomeMessage = `
-🚀 <b>Amul Power of Protein Stock Monitor Bot</b>
+🤖 <b>Welcome to Amul Power of Protein Stock Monitor!</b>
 
-Welcome! I'll help you monitor any product from Amul's Power of Protein collection.
+${user?.pincode ? `Your delivery pincode: <b>${user.pincode}</b>` : ""}
 
-<b>Available Commands:</b>
-/products - Browse and select products to monitor
-/status - Check current stock status
-/start_monitoring - Start automatic monitoring
-/stop_monitoring - Stop automatic monitoring
-/addtocart - Add product to cart (if logged in)
-/catalog_status - Show product catalog info
-/refresh_catalog - Update catalog from website
-/help - Show detailed help
+I'll help you monitor stock availability for Amul products and notify you when they're back in stock.
 
-<b>Collection:</b> <a href="https://shop.amul.com/en/collection/power-of-protein">Amul Power of Protein</a>
+<b>Quick Actions:</b>
+• /products - Browse and select products to monitor
+• /mytracking - View your tracking status
+• /pincode - View your delivery pincode
+• /help - Show all available commands
 
-${
-  this.cartAutomation
-    ? "✅ Cart automation enabled"
-    : "❌ Cart automation not configured"
-}
+<b>Product Collection:</b>
+• <a href="https://shop.amul.com/en/collection/power-of-protein">Amul Power of Protein</a>
+• Includes: Buttermilk, Milk, Curd, Paneer, Cheese, Ghee, Butter
 
-Use /products to start browsing and select a product to monitor!
-Use /refresh_catalog to get the latest products from the website.
+Ready to monitor some products! 🚀
+
+💡 <i>If you find this bot helpful, use /support to contribute to its development or /connect_with_me to reach out!</i>
       `;
 
       await ctx.reply(welcomeMessage, { parse_mode: "HTML" });
@@ -143,28 +201,49 @@ Use the buttons below to browse by category:
           return;
         }
 
-        const selection = this.productManager.getUserProduct(userId);
-        if (!selection) {
+        // Get user's tracking from database
+        const userTracking = await this.dbService.getUserTracking(userId);
+        if (userTracking.length === 0) {
           await ctx.reply(
             "❌ No product selected. Use /products to browse and select a product first."
           );
           return;
         }
 
+        // Use the first tracked product for status check
+        const tracking = userTracking[0];
+
         await ctx.reply("🔍 Checking stock status...");
 
         try {
-          console.log(`🔍 Starting stock check for: ${selection.productUrl}`);
-          // Create a new stock monitor for the selected product
-          const monitor = new StockMonitor(selection.productUrl);
-          console.log("📊 Stock monitor created, checking stock...");
+          console.log(`🔍 Starting stock check for: ${tracking.productUrl}`);
+
+          // Get user's pincode for stock checking
+          const user = await this.dbService.getUser(userId);
+          const userPincode = user?.pincode;
+
+          // Create a new stock monitor for the selected product with user's pincode
+          const monitor = new StockMonitor(tracking.productUrl, userPincode);
+          console.log(
+            `📊 Stock monitor created with pincode: ${
+              userPincode || "135001"
+            }, checking stock...`
+          );
           const status = await monitor.checkStock();
           console.log("📊 Stock check result:", status);
-          const message = this.formatStockStatus(status, selection.productName);
+          const message = this.formatStockStatus(
+            status,
+            tracking.productName,
+            userPincode || "135001"
+          );
           await ctx.reply(message, { parse_mode: "HTML" });
 
-          // Update last checked time
-          this.productManager.updateUserProductLastChecked(userId);
+          // Update last checked time in database
+          await this.dbService.updateStockStatus(
+            userId,
+            tracking.productId,
+            status.isInStock
+          );
         } catch (error) {
           console.error("❌ Error in stock check:", error);
           const errorMessage =
@@ -193,8 +272,39 @@ Use the buttons below to browse by category:
         return;
       }
 
-      const message = this.productManager.formatUserSelection(userId);
-      await ctx.reply(message, { parse_mode: "HTML" });
+      try {
+        const userTracking = await this.dbService.getUserTracking(userId);
+        if (userTracking.length === 0) {
+          await ctx.reply(
+            "❌ No product selected. Use /products to browse and select a product first."
+          );
+          return;
+        }
+
+        const tracking = userTracking[0];
+        const message = `
+📦 <b>Currently Selected Product</b>
+
+<b>${tracking.productName}</b>
+🔗 <a href="${tracking.productUrl}">View Product</a>
+
+<b>Tracking Status:</b>
+• Monitoring: ${tracking.isTracking ? "🟢 Active" : "🔴 Inactive"}
+• Notifications: ${tracking.notificationEnabled ? "🔔 On" : "🔕 Off"}
+• Last Checked: ${
+          tracking.lastChecked
+            ? new Date(tracking.lastChecked).toLocaleString()
+            : "Never"
+        }
+
+Use /mytracking to view all your tracked products.
+        `;
+
+        await ctx.reply(message, { parse_mode: "HTML" });
+      } catch (error) {
+        console.error("❌ Error in current command:", error);
+        await ctx.reply("❌ Error getting current product. Please try again.");
+      }
     });
 
     // Start monitoring command
@@ -205,22 +315,38 @@ Use the buttons below to browse by category:
         return;
       }
 
-      const selection = this.productManager.getUserProduct(userId);
-      if (!selection) {
-        await ctx.reply(
-          "❌ No product selected. Use /products to browse and select a product first."
-        );
-        return;
-      }
+      try {
+        const userTracking = await this.dbService.getUserTracking(userId);
+        const activeTracking = userTracking.filter((t) => t.isTracking);
 
-      // Start monitoring for this specific user
-      const success = this.productManager.startMonitoring(userId);
-      if (success) {
-        await ctx.reply(
-          `✅ Stock monitoring started for <b>${selection.productName}</b>!\n\nI'll notify you when the product is back in stock.\n\nUse /stop_monitoring to stop monitoring.`,
-          { parse_mode: "HTML" }
-        );
-      } else {
+        if (activeTracking.length === 0) {
+          await ctx.reply(
+            "❌ No product selected. Use /products to browse and select a product first."
+          );
+          return;
+        }
+
+        // Start monitoring for all user's products
+        let startedCount = 0;
+        for (const tracking of userTracking) {
+          if (!tracking.isTracking) {
+            await this.dbService.startTracking(userId, tracking.productId);
+            startedCount++;
+          }
+        }
+
+        if (startedCount > 0) {
+          await ctx.reply(
+            `✅ Stock monitoring started for ${startedCount} product(s)!\n\nI'll notify you when products come back in stock.\n\nUse /stop_monitoring to stop monitoring.\nUse /mytracking to view your tracking status.`,
+            { parse_mode: "HTML" }
+          );
+        } else {
+          await ctx.reply(
+            "ℹ️ Monitoring is already active for your selected products.\n\nUse /mytracking to view your tracking status."
+          );
+        }
+      } catch (error) {
+        console.error("❌ Error starting monitoring:", error);
         await ctx.reply("❌ Failed to start monitoring. Please try again.");
       }
     });
@@ -233,76 +359,112 @@ Use the buttons below to browse by category:
         return;
       }
 
-      const success = this.productManager.stopMonitoring(userId);
-      if (success) {
+      try {
+        const userTracking = await this.dbService.getUserTracking(userId);
+        const activeTracking = userTracking.filter((t) => t.isTracking);
+
+        if (activeTracking.length === 0) {
+          await ctx.reply("❌ No monitoring was active for your account.");
+          return;
+        }
+
+        // Stop monitoring for all user's products
+        let stoppedCount = 0;
+        for (const tracking of activeTracking) {
+          await this.dbService.stopTracking(userId, tracking.productId);
+          stoppedCount++;
+        }
+
         await ctx.reply(
-          "⏹️ Stock monitoring stopped for your selected product."
+          `⏹️ Stock monitoring stopped for ${stoppedCount} product(s).\n\nUse /start_monitoring to start monitoring again.\nUse /mytracking to view your tracking status.`
         );
-      } else {
-        await ctx.reply("❌ No monitoring was active for your account.");
+      } catch (error) {
+        console.error("❌ Error stopping monitoring:", error);
+        await ctx.reply("❌ Failed to stop monitoring. Please try again.");
       }
     });
 
-    // Add to cart command
-    this.bot.command("addtocart", async (ctx) => {
+    // Pincode management commands
+    this.bot.command("pincode", async (ctx) => {
       const userId = ctx.from?.id.toString();
       if (!userId) {
         await ctx.reply("❌ Unable to identify user.");
         return;
       }
 
-      const selection = this.productManager.getUserProduct(userId);
-      if (!selection) {
-        await ctx.reply(
-          "❌ No product selected. Use /products to browse and select a product first."
-        );
-        return;
-      }
+      const user = await this.dbService.getUser(userId);
+      const currentPincode = user?.pincode;
 
-      if (!this.cartAutomation) {
-        await ctx.reply(
-          "❌ Cart automation is not configured. Please set up your Amul credentials in the environment variables."
-        );
-        return;
-      }
+      let message = `
+📍 <b>Pincode Management</b>
 
-      await ctx.reply("🛒 Attempting to add product to cart...");
+${
+  currentPincode
+    ? `Current Pincode: <b>${currentPincode}</b>`
+    : "No pincode set"
+}
 
-      try {
-        // Create a new cart automation for the selected product
-        const cart = new CartAutomation(
-          this.cartAutomation["credentials"],
-          selection.productUrl
-        );
-        const result = await cart.addToCart();
-        const message = result.success
-          ? `✅ ${result.message}\n${
-              result.cartUrl ? `Cart URL: ${result.cartUrl}` : ""
-            }`
-          : `❌ ${result.message}`;
+To update your pincode, send a message with your 6-digit pincode.
+Example: <code>110001</code>
 
-        await ctx.reply(message);
-      } catch (error) {
-        const errorMessage =
-          error instanceof Error ? error.message : "Unknown error";
-        if (
-          errorMessage.includes("OTP") ||
-          errorMessage.includes("verification")
-        ) {
-          await ctx.reply(
-            `❌ Authentication required: ${errorMessage}\n\n💡 The cart automation requires mobile OTP verification and possibly PIN code entry. Please complete the login process manually on the Amul website.`
+This pincode will be used for stock checking and delivery location.
+      `;
+
+      // If user has a pincode, validate and show location info
+      if (currentPincode) {
+        try {
+          await ctx.reply("🔍 Validating current pincode...");
+          const pincodeInfo = await PincodeValidator.validatePincode(
+            currentPincode
           );
-        } else if (
-          errorMessage.includes("PIN") ||
-          errorMessage.includes("pincode")
-        ) {
-          await ctx.reply(
-            `❌ PIN verification required: ${errorMessage}\n\n💡 Please enter your PIN code on the Amul website to complete the authentication.`
-          );
-        } else {
-          await ctx.reply(`❌ Error adding to cart: ${errorMessage}`);
+          const locationInfo = PincodeValidator.formatPincodeInfo(pincodeInfo);
+
+          message += `\n\n${locationInfo}`;
+        } catch (error) {
+          console.error("❌ Error validating current pincode:", error);
+          message += "\n\n⚠️ Unable to validate pincode at the moment.";
         }
       }
+
+      await ctx.reply(message, { parse_mode: "HTML" });
+    });
+
+    this.bot.command("mytracking", async (ctx) => {
+      const userId = ctx.from?.id.toString();
+      if (!userId) {
+        await ctx.reply("❌ Unable to identify user.");
+        return;
+      }
+
+      const userTracking = await this.dbService.getUserTracking(userId);
+
+      if (userTracking.length === 0) {
+        await ctx.reply(
+          "❌ You're not tracking any products. Use /products to browse and select products to track."
+        );
+        return;
+      }
+
+      const trackingList = userTracking
+        .map((tracking) => {
+          const status = tracking.isTracking ? "🟢 Active" : "🔴 Inactive";
+          const notifications = tracking.notificationEnabled
+            ? "🔔 On"
+            : "🔕 Off";
+          return `• <b>${tracking.productName}</b>\n  Status: ${status} | Notifications: ${notifications}`;
+        })
+        .join("\n\n");
+
+      const message = `
+📊 <b>Your Product Tracking</b>
+
+${trackingList}
+
+Use /start_monitoring to activate tracking for a product.
+Use /stop_monitoring to stop tracking.
+      `;
+
+      await ctx.reply(message, { parse_mode: "HTML" });
     });
 
     // Help command
@@ -317,25 +479,31 @@ Use the buttons below to browse by category:
 • /status - Check current stock status manually
 • /start_monitoring - Start automatic stock monitoring
 • /stop_monitoring - Stop automatic monitoring
-• /addtocart - Automatically add product to your Amul cart
+• /mytracking - Show your tracking status
+• /pincode - View your delivery pincode
+• /update_pincode - Update your delivery pincode
 • /catalog_status - Show product catalog information
-• /refresh_catalog - Update product catalog from website
+• /refresh_catalog - Update catalog from website
+• /support - Support the bot development
+• /connect-with-me - Connect with me on Telegram
 • /help - Show this help message
 
 <b>Features:</b>
 • Browse all Amul Power of Protein products
 • Real-time stock monitoring for any product
 • Automatic notifications when product is back in stock
-• Cart automation (requires Amul account credentials)
+• Pincode-based stock checking
 • Cooldown system to prevent spam notifications
 • Live product catalog updates from website
 
 <b>How to Use:</b>
-1. Use /products to browse and select a product
-2. Use /status to check current stock status
-3. Use /start_monitoring to begin automatic monitoring
-4. You'll receive notifications when the product comes back in stock
-5. Use /stop_monitoring to stop monitoring
+1. Use /pincode to set your delivery pincode
+2. Use /products to browse and select a product
+3. Use /status to check current stock status
+4. Use /start_monitoring to begin automatic monitoring
+5. You'll receive notifications when the product comes back in stock
+6. Use /stop_monitoring to stop monitoring
+7. Use /mytracking to view your tracking status
 
 <b>Product Collection:</b>
 • <a href="https://shop.amul.com/en/collection/power-of-protein">Amul Power of Protein</a>
@@ -343,6 +511,81 @@ Use the buttons below to browse by category:
       `;
 
       await ctx.reply(helpMessage, { parse_mode: "HTML" });
+    });
+
+    // Support command
+    this.bot.command("support", async (ctx) => {
+      const supportMessage = `
+☕ <b>Support the Bot Development</b>
+
+Thank you for using the Amul Stock Monitor Bot! 🚀
+
+If you find this bot helpful, please consider supporting its development:
+
+<b>💳 UPI Payment (India):</b>
+UPI ID: <code>harshulaggarwal@ybl</code>
+Name: Harshul Kansal
+
+<b>☕ Buy Me a Coffee:</b>
+<a href="https://www.buymeacoffee.com/is.harshul">Buy Me a Coffee 🤎</a>
+
+<b>⭐ GitHub Star:</b>
+<a href="https://github.com/is-harshul/telegram-bot-amul">⭐ Star this project on GitHub</a>
+
+<b>🔄 Server Costs:</b>
+• Total: ~$10/month
+
+<b>🎯 What Your Support Helps With:</b>
+• Server hosting costs
+• Database maintenance
+• Feature development
+• Bug fixes and improvements
+• 24/7 bot availability
+
+<b>🙏 Thank You!</b>
+Every contribution helps keep this bot running and improving!
+
+Use /help to see all available commands.
+      `;
+
+      await ctx.reply(supportMessage, { parse_mode: "HTML" });
+    });
+
+    // Connect with me command
+    this.bot.command("connect_with_me", async (ctx) => {
+      const connectMessage = `
+👋 <b>Connect With Me</b>
+
+Hey! I'm Harshul Kansal, the developer of this Amul Stock Monitor Bot.
+
+<b>📱 Telegram:</b>
+<a href="https://t.me/is_harshul">@is_harshul</a>
+
+<b>💼 LinkedIn:</b>
+<a href="https://www.linkedin.com/in/harshul-kansal/">Harshul Kansal</a>
+
+<b>🐙 GitHub:</b>
+<a href="https://github.com/is-harshul">@is-harshul</a>
+
+<b>📧 Email:</b>
+harshul.kansal@gmail.com
+
+<b>💬 Let's Connect!</b>
+Feel free to reach out for:
+• Bot feature requests
+• Bug reports
+• Technical discussions
+• Collaboration opportunities
+• General chat
+
+<b>🛠️ Other Projects:</b>
+• <a href="https://github.com/is-harshul">GitHub Profile</a>
+• <a href="https://t.me/is_harshul">Telegram Channel</a>
+
+Looking forward to connecting with you! 🚀
+      `;
+
+      await ctx.reply(connectMessage, { parse_mode: "HTML" });
     });
 
     // Catalog status command
@@ -404,39 +647,104 @@ Use the buttons below to browse by category:
 
       // Check if this is the bot owner
       if (userId === config.chatId) {
-        const allUsers = this.productManager.getAllUsers();
-        const monitoringUsers = this.productManager.getMonitoringUsers();
+        try {
+          const stats = await this.dbService.getTrackingStatistics();
+          const allUsers = await this.dbService.getAllUsers();
+          const activeTracking = await this.dbService.getActiveTracking();
 
-        const message = `
+          const message = `
 📊 <b>User Statistics</b>
 
-👥 Total Users: ${allUsers.length}
-🔍 Monitoring Users: ${monitoringUsers.length}
+👥 Total Users: ${stats.totalUsers}
+🔍 Active Tracking: ${stats.activeTracking}
+📦 Total Tracking Entries: ${stats.totalTracking}
 
-<b>Monitoring Users:</b>
+<b>Active Tracking:</b>
 ${
-  monitoringUsers
-    .map(
-      (user) =>
-        `• ${user.username || user.firstName || "Unknown"} (${
-          user.productName
-        })`
-    )
+  activeTracking
+    .map((tracking) => `• ${tracking.productName} (${tracking.userId})`)
     .join("\n") || "None"
 }
         `;
 
-        await ctx.reply(message, { parse_mode: "HTML" });
+          await ctx.reply(message, { parse_mode: "HTML" });
+        } catch (error) {
+          console.error("❌ Error getting user statistics:", error);
+          await ctx.reply("❌ Error getting user statistics.");
+        }
       } else {
         await ctx.reply("❌ You don't have permission to use this command.");
       }
     });
 
-    // Handle unknown commands
+    // Handle pincode updates and unknown commands
     this.bot.on("text", async (ctx) => {
-      await ctx.reply(
-        "❓ Unknown command. Use /help to see available commands."
-      );
+      const userId = ctx.from?.id.toString();
+      const text = ctx.message?.text;
+
+      if (!userId || !text) {
+        await ctx.reply(
+          "❓ Unknown command. Use /help to see available commands."
+        );
+        return;
+      }
+
+      // Check if the text is a 6-digit pincode
+      const pincodeRegex = /^\d{6}$/;
+      if (pincodeRegex.test(text)) {
+        try {
+          // Show validation in progress
+          await ctx.reply("🔍 Validating pincode with India Post API...");
+
+          // Validate pincode using India Post API
+          const pincodeInfo = await PincodeValidator.validatePincode(text);
+
+          if (!pincodeInfo.isValid) {
+            const errorMessage =
+              PincodeValidator.formatPincodeInfo(pincodeInfo);
+            await ctx.reply(errorMessage, { parse_mode: "HTML" });
+
+            // Additional helpful message
+            await ctx.reply(
+              "💡 <b>Need Help?</b>\n\n• Make sure you're entering a valid 6-digit pincode\n• You can find your pincode on any postal item or online\n• Use /pincode to view your current pincode\n• Use /help to see all available commands",
+              { parse_mode: "HTML" }
+            );
+            return;
+          }
+
+          // Update pincode in database
+          await this.dbService.updateUserPincode(userId, text);
+
+          // Format success message with location details
+          const locationInfo = PincodeValidator.formatPincodeInfo(pincodeInfo);
+          const successMessage = `
+✅ <b>Pincode Updated Successfully!</b>
+
+📍 <b>Pincode:</b> <code>${text}</code>
+
+${locationInfo}
+
+<b>This pincode will be used for:</b>
+• Stock availability checking
+• Delivery location verification
+• Accurate stock status for your area
+
+<b>Next Steps:</b>
+• Use /products to browse and select products
+• Use /pincode to view your current pincode
+• Use /help to see all available commands
+          `;
+
+          await ctx.reply(successMessage, { parse_mode: "HTML" });
+        } catch (error) {
+          console.error("❌ Error updating pincode:", error);
+          await ctx.reply("❌ Failed to update pincode. Please try again.");
+        }
+      } else {
+        await ctx.reply(
+          "❓ Unknown command. Use /help to see available commands.\n\nTo update your pincode, send a 6-digit pincode (e.g., 110001).\n\nOr use /update_pincode for a guided update."
+        );
+      }
     });
   }
 
@@ -554,29 +862,47 @@ Select a product to monitor:
         lastName: ctx.from?.last_name,
       };
 
-      const success = this.productManager.setUserProduct(
-        userId,
-        productId,
-        userInfo
-      );
-      if (success) {
+      try {
+        // Create or update user in database
+        await this.dbService.createOrUpdateUser({
+          telegramId: userId,
+          username: userInfo.username,
+          firstName: userInfo.firstName,
+          lastName: userInfo.lastName,
+        });
+
+        // Create or update product tracking
         const product = this.productManager.getProductById(productId);
+        if (!product) {
+          await ctx.reply("❌ Product not found. Please try again.");
+          return;
+        }
+
+        await this.dbService.createOrUpdateProductTracking({
+          userId,
+          productId,
+          productName: product.name,
+          productUrl: product.url,
+        });
+
         const message = `
 ✅ <b>Product Selected Successfully!</b>
 
-<b>${product?.name}</b>
-📝 ${product?.description}
-🏷️ Category: ${product?.category}
-💰 Price: ${product?.price || "Not available"}
+<b>${product.name}</b>
+📝 ${product.description}
+🏷️ Category: ${product.category}
+💰 Price: ${product.price || "Not available"}
 
 You can now:
 • Use /status to check current stock
 • Use /start_monitoring to begin automatic monitoring
-• Use /addtocart to add to cart (if configured)
+
+• Use /mytracking to view your tracking status
         `;
 
         await ctx.editMessageText(message, { parse_mode: "HTML" });
-      } else {
+      } catch (error) {
+        console.error("❌ Error selecting product:", error);
         await ctx.reply("❌ Failed to select product. Please try again.");
       }
     });
@@ -600,7 +926,11 @@ Use the buttons below to browse by category:
     });
   }
 
-  private formatStockStatus(status: StockStatus, productName: string): string {
+  private formatStockStatus(
+    status: StockStatus,
+    productName: string,
+    pincode: string
+  ): string {
     const emoji = status.isInStock ? "✅" : "❌";
     const statusText = status.isInStock ? "IN STOCK" : "OUT OF STOCK";
     const price = status.price ? `\n💰 Price: ${status.price}` : "";
@@ -611,6 +941,7 @@ Use the buttons below to browse by category:
 ${emoji} <b>Stock Status: ${statusText}</b>
 📦 Product: ${productName}
 ${price}
+📍 For Pincode: ${pincode}
 🕒 Last checked: ${time}
 ${error}
     `.trim();
@@ -625,44 +956,78 @@ ${error}
           "🔍 [Monitoring] Starting stock check for all monitoring users..."
         );
 
-        // Get all users who are monitoring
-        const monitoringUsers = this.productManager.getMonitoringUsers();
+        // Get all active tracking from database
+        const activeTracking = await this.dbService.getActiveTracking();
         console.log(
-          `📊 [Monitoring] Found ${monitoringUsers.length} users monitoring products`
+          `📊 [Monitoring] Found ${activeTracking.length} active tracking entries`
         );
 
-        for (const userSelection of monitoringUsers) {
+        for (const tracking of activeTracking) {
           try {
             console.log(
-              `🔍 [Monitoring] Checking stock for user ${
-                userSelection.userId
-              } (${userSelection.username || "Unknown"})`
+              `🔍 [Monitoring] Checking stock for user ${tracking.userId} (${tracking.productName})`
             );
 
-            const monitor = new StockMonitor(userSelection.productUrl);
+            // Get user's pincode for stock checking
+            const user = await this.dbService.getUser(tracking.userId);
+            const userPincode = user?.pincode;
+
+            const monitor = new StockMonitor(tracking.productUrl, userPincode);
+            console.log(
+              `📊 [Monitoring] Stock monitor created with pincode: ${
+                userPincode || "default"
+              }`
+            );
             const status = await monitor.checkStock();
 
             console.log(
-              `📊 [Monitoring] Stock status for ${userSelection.productName}: ${
+              `📊 [Monitoring] Stock status for ${tracking.productName}: ${
                 status.isInStock ? "IN STOCK" : "OUT OF STOCK"
               }`
             );
 
-            // If product is back in stock, send notification
-            if (status.isInStock && this.shouldSendNotification()) {
+            // Update stock status in database
+            await this.dbService.updateStockStatus(
+              tracking.userId,
+              tracking.productId,
+              status.isInStock
+            );
+
+            // If product is back in stock and wasn't in stock before, send notification
+            if (
+              status.isInStock &&
+              tracking.lastStockStatus === false &&
+              this.shouldSendNotification()
+            ) {
               console.log(
-                `🎉 [Monitoring] Product is back in stock! Notifying user ${userSelection.userId}`
+                `🎉 [Monitoring] Product is back in stock! Notifying user ${tracking.userId}`
               );
+
+              // Get user info for notification
+              const user = await this.dbService.getUser(tracking.userId);
+              const userInfo = {
+                ...user,
+                username: user?.username,
+                firstName: user?.firstName,
+                lastName: user?.lastName,
+              };
+
               await this.sendStockNotification(
                 status,
-                userSelection,
-                userSelection.userId
+                {
+                  userId: tracking.userId,
+                  productName: tracking.productName,
+                  productUrl: tracking.productUrl,
+                  ...userInfo,
+                },
+                tracking.userId,
+                user?.pincode || "135001"
               );
               this.updateLastNotification();
             }
           } catch (error) {
             console.error(
-              `❌ [Monitoring] Error checking stock for user ${userSelection.userId}:`,
+              `❌ [Monitoring] Error checking stock for user ${tracking.userId}:`,
               error
             );
           }
@@ -698,15 +1063,16 @@ ${error}
   private async sendStockNotification(
     status: StockStatus,
     selection: any,
-    userId: string
+    userId: string,
+    pincode: string
   ): Promise<void> {
     const message = `
 🎉 <b>PRODUCT IS BACK IN STOCK!</b>
 
-${this.formatStockStatus(status, selection.productName)}
+${this.formatStockStatus(status, selection.productName, pincode)}
 
 🛒 <b>Quick Actions:</b>
-• Use /addtocart to automatically add to your cart
+
 • Visit: ${selection.productUrl}
 
 ⏰ <b>Notification Settings:</b>

@@ -6,9 +6,11 @@ import { StockStatus, ProductInfo } from "../types";
 export class StockMonitor {
   private readonly productUrl: string;
   private lastStatus: StockStatus | null = null;
+  private userPincode?: string;
 
-  constructor(productUrl: string) {
+  constructor(productUrl: string, userPincode?: string) {
     this.productUrl = productUrl;
+    this.userPincode = userPincode;
   }
 
   async checkStock(): Promise<StockStatus> {
@@ -253,16 +255,20 @@ export class StockMonitor {
         console.log(
           "⌨️ Setting PIN code value directly and dispatching events..."
         );
-        await page.evaluate((selector: string) => {
-          const input = document.querySelector(
-            selector
-          ) as HTMLInputElement | null;
-          if (input) {
-            input.value = "135001";
-            input.dispatchEvent(new Event("input", { bubbles: true }));
-            input.dispatchEvent(new Event("change", { bubbles: true }));
-          }
-        }, foundSelector);
+        await page.evaluate(
+          (selector: string, pincode: string) => {
+            const input = document.querySelector(
+              selector
+            ) as HTMLInputElement | null;
+            if (input) {
+              input.value = pincode;
+              input.dispatchEvent(new Event("input", { bubbles: true }));
+              input.dispatchEvent(new Event("change", { bubbles: true }));
+            }
+          },
+          foundSelector,
+          this.userPincode || "135001"
+        );
         await new Promise((resolve) => setTimeout(resolve, 1000));
 
         // Wait for the dropdown option to appear (up to 2 seconds)
@@ -272,24 +278,28 @@ export class StockMonitor {
         });
 
         // Find and click the correct dropdown option
-        const dropdownClicked = await page.evaluate(() => {
+        const dropdownClicked = await page.evaluate((pincode: string) => {
           const items = Array.from(
             document.querySelectorAll("#automatic .searchitem-name")
           );
           for (const item of items) {
             const text = item.querySelector(".item-name")?.textContent?.trim();
-            if (text === "135001") {
+            if (text === pincode) {
               (item as HTMLElement).click();
               return true;
             }
           }
           return false;
-        });
+        }, this.userPincode || "135001");
         if (dropdownClicked) {
-          console.log("🖱️ Clicked dropdown option for 135001");
+          console.log(
+            `🖱️ Clicked dropdown option for ${this.userPincode || "135001"}`
+          );
         } else {
           console.log(
-            "⚠️ Could not find dropdown option for 135001, trying Enter..."
+            `⚠️ Could not find dropdown option for ${
+              this.userPincode || "135001"
+            }, trying Enter...`
           );
           await page.keyboard.press("Enter");
         }

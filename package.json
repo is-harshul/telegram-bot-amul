@@ -11,7 +11,8 @@
     "test-network": "ts-node test-network.ts",
     "test-token": "ts-node test-bot-token.ts",
     "check-webhook": "ts-node check-webhook.ts",
-    "cleanup": "./cleanup.sh"
+    "cleanup": "./cleanup.sh",
+    "update-photo": "ts-node update-bot-photo.ts"
   },
   "keywords": [
     "telegram",
@@ -26,6 +27,7 @@
     "axios": "^1.6.2",
     "cheerio": "^1.0.0-rc.12",
     "dotenv": "^16.3.1",
+    "mongoose": "^8.17.0",
     "node-cron": "^3.0.3",
     "node-fetch": "^2.7.0",
     "puppeteer": "^24.11.2",

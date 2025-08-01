@@ -13,18 +13,12 @@ export interface NotificationSettings {
   lastNotification?: Date;
 }
 
-export interface AmulCredentials {
-  email: string;
-  password: string;
-}
-
 export interface BotConfig {
   telegramToken: string;
   chatId: string;
   productUrl: string;
   checkIntervalMinutes: number;
   notificationCooldownMinutes: number;
-  amulCredentials?: AmulCredentials | undefined;
 }
 
 export interface ProductInfo {
@@ -33,12 +27,6 @@ export interface ProductInfo {
   availability: string;
   url: string;
   imageUrl?: string;
-}
-
-export interface CartOperation {
-  success: boolean;
-  message: string;
-  cartUrl?: string;
 }
 
 export interface AmulProduct {

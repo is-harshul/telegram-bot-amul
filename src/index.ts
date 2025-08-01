@@ -1,9 +1,15 @@
 import { config } from "./config";
 import { TelegramBot } from "./services/telegramBot";
+import { DatabaseService } from "./services/databaseService";
 
 async function main(): Promise<void> {
   try {
     console.log("🚀 Starting Amul Power of Protein Stock Monitor Bot...");
+
+    // Initialize database
+    console.log("🗄️ Initializing database connection...");
+    const dbService = DatabaseService.getInstance();
+    await dbService.connect();
 
     // Validate configuration
     if (!config.telegramToken) {
@@ -20,12 +26,6 @@ async function main(): Promise<void> {
     console.log(
       `🔔 Notification cooldown: ${config.notificationCooldownMinutes} minutes`
     );
-
-    if (config.amulCredentials) {
-      console.log("🛒 Cart automation: Enabled");
-    } else {
-      console.log("🛒 Cart automation: Disabled (no credentials provided)");
-    }
 
     // Check network connectivity before launching bot
     console.log("🌐 Checking network connectivity...");
