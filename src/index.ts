@@ -21,7 +21,6 @@ async function main(): Promise<void> {
     }
 
     console.log("✅ Configuration loaded successfully");
-    console.log(`📱 Default Product URL: ${config.productUrl}`);
     console.log(`⏰ Check interval: ${config.checkIntervalMinutes} minutes`);
     console.log(
       `🔔 Notification cooldown: ${config.notificationCooldownMinutes} minutes`

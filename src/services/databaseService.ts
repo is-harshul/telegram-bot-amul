@@ -136,7 +136,7 @@ export class DatabaseService {
     try {
       const result = await ProductTracking.findOneAndUpdate(
         { userId, productId },
-        { $set: { isTracking: true, notificationEnabled: true } },
+        { $set: { isTracking: true } },
         { new: true }
       );
       return !!result;
@@ -156,40 +156,6 @@ export class DatabaseService {
       return !!result;
     } catch (error) {
       console.error("❌ Error stopping tracking:", error);
-      throw error;
-    }
-  }
-
-  async enableNotifications(
-    userId: string,
-    productId: string
-  ): Promise<boolean> {
-    try {
-      const result = await ProductTracking.findOneAndUpdate(
-        { userId, productId },
-        { $set: { notificationEnabled: true } },
-        { new: true }
-      );
-      return !!result;
-    } catch (error) {
-      console.error("❌ Error enabling notifications:", error);
-      throw error;
-    }
-  }
-
-  async disableNotifications(
-    userId: string,
-    productId: string
-  ): Promise<boolean> {
-    try {
-      const result = await ProductTracking.findOneAndUpdate(
-        { userId, productId },
-        { $set: { notificationEnabled: false } },
-        { new: true }
-      );
-      return !!result;
-    } catch (error) {
-      console.error("❌ Error disabling notifications:", error);
       throw error;
     }
   }
@@ -219,7 +185,6 @@ export class DatabaseService {
     try {
       return await ProductTracking.find({
         isTracking: true,
-        notificationEnabled: true,
       });
     } catch (error) {
       console.error("❌ Error getting active tracking:", error);
@@ -241,7 +206,6 @@ export class DatabaseService {
       return await ProductTracking.find({
         productId,
         isTracking: true,
-        notificationEnabled: true,
       });
     } catch (error) {
       console.error("❌ Error getting tracking by product:", error);
@@ -259,7 +223,6 @@ export class DatabaseService {
       const totalUsers = await User.countDocuments({ isActive: true });
       const activeTracking = await ProductTracking.countDocuments({
         isTracking: true,
-        notificationEnabled: true,
       });
       const totalTracking = await ProductTracking.countDocuments();
 

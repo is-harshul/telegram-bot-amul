@@ -70,7 +70,7 @@ export class StockMonitor {
           'button.product_enquiry[data-bs-toggle="modal"][data-bs-target="#enquiryModal"]'
         );
         const addToCartButton = document.querySelector(
-          'a.btn.btn-primary.add-to-cart.disabled[disabled="true"]'
+          "a.btn.btn-primary.add-to-cart"
         );
 
         // Additional fallback selectors
@@ -151,7 +151,15 @@ export class StockMonitor {
           outOfStockText;
 
         console.log("🔍 Debug - Is out of stock:", isOutOfStock);
-        const isInStock = !isOutOfStock;
+        console.log(
+          "🔍 Debug - Add to cart button disabled attribute:",
+          addToCartButton?.getAttribute("disabled")
+        );
+
+        // If button is disabled (has disabled attribute), product is out of stock
+        // disabled="0" means button is enabled (product in stock)
+        // disabled="1" or just "disabled" means button is disabled (product out of stock)
+        const isInStock = addToCartButton?.getAttribute("disabled") === "0";
         const price = priceElement?.textContent?.trim() || "";
         const productName =
           productNameElement?.textContent?.trim() ||

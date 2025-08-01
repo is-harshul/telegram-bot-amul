@@ -13,18 +13,17 @@ import { config } from "../config";
 
 export class TelegramBot {
   private bot: Telegraf<Context>;
-  private stockMonitor: StockMonitor;
   private productManager: ProductManager;
   private dbService: DatabaseService;
   private notificationSettings: NotificationSettings;
   private isMonitoring: boolean = false;
   private isRunning: boolean = false;
+  private userCurrentSelection: Map<string, any> = new Map(); // Track user's current selection
 
   constructor(config: BotConfig) {
     // Create bot with unique session to avoid conflicts
     this.bot = new Telegraf(config.telegramToken);
 
-    this.stockMonitor = new StockMonitor(config.productUrl);
     this.productManager = new ProductManager();
     this.dbService = DatabaseService.getInstance();
     this.notificationSettings = {
@@ -35,6 +34,9 @@ export class TelegramBot {
     this.setupCommands();
     this.setupCallbacks();
     this.setupErrorHandling();
+
+    // Start cleanup timer for old selections (every 30 minutes)
+    setInterval(() => this.cleanupOldSelections(), 30 * 60 * 1000);
   }
 
   private setupErrorHandling(): void {
@@ -210,8 +212,27 @@ Use the buttons below to browse by category:
           return;
         }
 
-        // Use the first tracked product for status check
-        const tracking = userTracking[0];
+        // Try to use the current selection first, otherwise use the last tracked product
+        let tracking = userTracking[userTracking.length - 1]; // Default to last tracked
+
+        // Check if user has a current selection (from recent product selection)
+        const currentSelection = this.userCurrentSelection.get(userId);
+        if (currentSelection) {
+          // Use the current selection if it's recent (within last 10 minutes)
+          const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
+          if (currentSelection.timestamp > tenMinutesAgo) {
+            // Find the tracking entry for this product
+            const currentTracking = userTracking.find(
+              (t) => t.productId === currentSelection.productId
+            );
+            if (currentTracking) {
+              tracking = currentTracking;
+            }
+          } else {
+            // Remove old selection from memory
+            this.userCurrentSelection.delete(userId);
+          }
+        }
 
         await ctx.reply("🔍 Checking stock status...");
 
@@ -290,7 +311,6 @@ Use the buttons below to browse by category:
 
 <b>Tracking Status:</b>
 • Monitoring: ${tracking.isTracking ? "🟢 Active" : "🔴 Inactive"}
-• Notifications: ${tracking.notificationEnabled ? "🔔 On" : "🔕 Off"}
 • Last Checked: ${
           tracking.lastChecked
             ? new Date(tracking.lastChecked).toLocaleString()
@@ -317,34 +337,37 @@ Use /mytracking to view all your tracked products.
 
       try {
         const userTracking = await this.dbService.getUserTracking(userId);
-        const activeTracking = userTracking.filter((t) => t.isTracking);
 
-        if (activeTracking.length === 0) {
+        if (userTracking.length === 0) {
           await ctx.reply(
             "❌ No product selected. Use /products to browse and select a product first."
           );
           return;
         }
 
-        // Start monitoring for all user's products
-        let startedCount = 0;
-        for (const tracking of userTracking) {
-          if (!tracking.isTracking) {
-            await this.dbService.startTracking(userId, tracking.productId);
-            startedCount++;
-          }
+        // Check how many products are not currently tracking
+        const inactiveTracking = userTracking.filter((t) => !t.isTracking);
+
+        if (inactiveTracking.length === 0) {
+          await ctx.reply(
+            "ℹ️ Monitoring is already active for all your selected products.\n\nUse /mytracking to view your tracking status."
+          );
+          return;
         }
 
-        if (startedCount > 0) {
-          await ctx.reply(
-            `✅ Stock monitoring started for ${startedCount} product(s)!\n\nI'll notify you when products come back in stock.\n\nUse /stop_monitoring to stop monitoring.\nUse /mytracking to view your tracking status.`,
-            { parse_mode: "HTML" }
-          );
-        } else {
-          await ctx.reply(
-            "ℹ️ Monitoring is already active for your selected products.\n\nUse /mytracking to view your tracking status."
-          );
+        // Start monitoring for all inactive products
+        let productName = "";
+        let productUrl = "";
+        for (const tracking of inactiveTracking) {
+          await this.dbService.startTracking(userId, tracking.productId);
+          productName = tracking.productName;
+          productUrl = tracking.productUrl;
         }
+
+        await ctx.reply(
+          `✅ Stock monitoring started for <a href="${productUrl}">${productName}</a>!\n\nI'll notify you when products come back in stock.\n\nUse /stop_monitoring to stop monitoring.\nUse /mytracking to view your tracking status.`,
+          { parse_mode: "HTML" }
+        );
       } catch (error) {
         console.error("❌ Error starting monitoring:", error);
         await ctx.reply("❌ Failed to start monitoring. Please try again.");
@@ -448,10 +471,7 @@ This pincode will be used for stock checking and delivery location.
       const trackingList = userTracking
         .map((tracking) => {
           const status = tracking.isTracking ? "🟢 Active" : "🔴 Inactive";
-          const notifications = tracking.notificationEnabled
-            ? "🔔 On"
-            : "🔕 Off";
-          return `• <b>${tracking.productName}</b>\n  Status: ${status} | Notifications: ${notifications}`;
+          return `• <b>${tracking.productName}</b>\n Tracking Status: ${status}`;
         })
         .join("\n\n");
 
@@ -464,7 +484,21 @@ Use /start_monitoring to activate tracking for a product.
 Use /stop_monitoring to stop tracking.
       `;
 
-      await ctx.reply(message, { parse_mode: "HTML" });
+      // Create inline keyboard with individual stop buttons for active tracking
+      const activeTracking = userTracking.filter((t) => t.isTracking);
+      const keyboard = {
+        inline_keyboard: activeTracking.map((tracking) => [
+          {
+            text: `⏹️ Stop tracking ${tracking.productName}`,
+            callback_data: `stop_tracking_${tracking.productId}`,
+          },
+        ]),
+      };
+
+      await ctx.reply(message, {
+        parse_mode: "HTML",
+        reply_markup: keyboard,
+      });
     });
 
     // Help command
@@ -885,6 +919,14 @@ Select a product to monitor:
           productUrl: product.url,
         });
 
+        // Store the current selection for this user
+        this.userCurrentSelection.set(userId, {
+          productId,
+          productName: product.name,
+          productUrl: product.url,
+          timestamp: new Date(),
+        });
+
         const message = `
 ✅ <b>Product Selected Successfully!</b>
 
@@ -904,6 +946,37 @@ You can now:
       } catch (error) {
         console.error("❌ Error selecting product:", error);
         await ctx.reply("❌ Failed to select product. Please try again.");
+      }
+    });
+
+    // Handle individual stop tracking buttons
+    this.bot.action(/^stop_tracking_(.+)$/, async (ctx) => {
+      try {
+        const userId = ctx.from?.id.toString();
+        const productId = ctx.match[1];
+        const productName = this.productManager.getProductById(productId)?.name;
+
+        if (!userId) {
+          await ctx.reply("❌ Unable to identify user.");
+          return;
+        }
+
+        // Stop tracking for this specific product
+        const success = await this.dbService.stopTracking(userId, productId);
+
+        if (success) {
+          await ctx.reply(
+            `✅ Tracking stopped for ${productName} product successfully!`
+          );
+        } else {
+          await ctx.reply("❌ Failed to stop tracking for this product.");
+        }
+
+        // Update the original message to remove the button
+        await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
+      } catch (error) {
+        console.error("❌ Error stopping tracking:", error);
+        await ctx.reply("❌ Error stopping tracking. Please try again.");
       }
     });
 
@@ -1190,6 +1263,22 @@ ${this.formatStockStatus(status, selection.productName, pincode)}
     } catch (error) {
       console.error("❌ Network connectivity check failed:", error);
       return false;
+    }
+  }
+
+  private cleanupOldSelections(): void {
+    const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
+    let cleanedCount = 0;
+
+    for (const [userId, selection] of this.userCurrentSelection.entries()) {
+      if (selection.timestamp < tenMinutesAgo) {
+        this.userCurrentSelection.delete(userId);
+        cleanedCount++;
+      }
+    }
+
+    if (cleanedCount > 0) {
+      console.log(`🧹 Cleaned up ${cleanedCount} old user selections`);
     }
   }
 }

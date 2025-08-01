@@ -6,7 +6,6 @@ export interface IProductTracking extends Document {
   productName: string;
   productUrl: string;
   isTracking: boolean;
-  notificationEnabled: boolean;
   lastChecked?: Date;
   lastStockStatus?: boolean;
   createdAt: Date;
@@ -36,10 +35,7 @@ const ProductTrackingSchema = new Schema<IProductTracking>(
       type: Boolean,
       default: false,
     },
-    notificationEnabled: {
-      type: Boolean,
-      default: true,
-    },
+
     lastChecked: {
       type: Date,
       default: null,

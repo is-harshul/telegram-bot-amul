@@ -16,7 +16,6 @@ export interface NotificationSettings {
 export interface BotConfig {
   telegramToken: string;
   chatId: string;
-  productUrl: string;
   checkIntervalMinutes: number;
   notificationCooldownMinutes: number;
 }
@@ -49,7 +48,6 @@ export interface UserProductSelection {
   firstName?: string;
   lastName?: string;
   isMonitoring: boolean;
-  notificationEnabled: boolean;
 }
 
 export interface BotCommand {

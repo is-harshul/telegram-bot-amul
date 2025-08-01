@@ -118,7 +118,6 @@ export class ProductManager {
       firstName: userInfo?.firstName,
       lastName: userInfo?.lastName,
       isMonitoring: false,
-      notificationEnabled: true,
     };
 
     this.userSelections.set(userId, selection);
@@ -172,18 +171,6 @@ export class ProductManager {
     if (!selection) {
       return false;
     }
-    selection.notificationEnabled = true;
-    this.userSelections.set(userId, selection);
-    return true;
-  }
-
-  // Disable notifications for a user
-  disableNotifications(userId: string): boolean {
-    const selection = this.userSelections.get(userId);
-    if (!selection) {
-      return false;
-    }
-    selection.notificationEnabled = false;
     this.userSelections.set(userId, selection);
     return true;
   }
@@ -191,7 +178,7 @@ export class ProductManager {
   // Get all users who are monitoring
   getMonitoringUsers(): UserProductSelection[] {
     return Array.from(this.userSelections.values()).filter(
-      (selection) => selection.isMonitoring && selection.notificationEnabled
+      (selection) => selection.isMonitoring
     );
   }
 
