@@ -18,6 +18,9 @@ export interface BotConfig {
   chatId: string;
   checkIntervalMinutes: number;
   notificationCooldownMinutes: number;
+  redisHost: string;
+  redisPort: number;
+  redisDatabaseIndex: number;
 }
 
 export interface ProductInfo {

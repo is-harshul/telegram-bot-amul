@@ -28,11 +28,21 @@ export function loadConfig(): BotConfig {
     10
   );
 
+  const redisHost = validateRequiredEnvVar("REDIS_HOST");
+  const redisPort = parseInt(validateRequiredEnvVar("REDIS_PORT"), 10);
+  const redisDatabaseIndex = parseInt(
+    validateRequiredEnvVar("REDIS_DATABASE_INDEX"),
+    10
+  );
+
   return {
     telegramToken,
     chatId,
     checkIntervalMinutes,
     notificationCooldownMinutes,
+    redisHost,
+    redisPort,
+    redisDatabaseIndex,
   };
 }
 

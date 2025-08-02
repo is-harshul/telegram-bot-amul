@@ -8,6 +8,13 @@
     ],
     "outDir": "./dist",
     "rootDir": "./src",
+    "baseUrl": "./src",
+    "paths": {
+      "@/*": ["*"],
+      "@/services/*": ["services/*"],
+      "@/config/*": ["config/*"],
+      "@/types/*": ["types/*"]
+    },
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
