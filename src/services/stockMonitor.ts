@@ -26,21 +26,95 @@ export class StockMonitor {
       return status;
     } catch (error) {
       console.error("❌ [StockMonitor] Error checking stock:", error);
-      const errorStatus: StockStatus = {
-        isInStock: false,
-        lastChecked: new Date(),
-        error: error instanceof Error ? error.message : "Unknown error",
-      };
-      this.lastStatus = errorStatus;
-      return errorStatus;
+      console.log("🔄 Falling back to Cheerio for stock checking...");
+
+      try {
+        const cheerioStatus = await this.checkWithCheerio();
+        console.log(
+          `📊 [StockMonitor] Cheerio fallback result:`,
+          cheerioStatus
+        );
+        this.lastStatus = cheerioStatus;
+        return cheerioStatus;
+      } catch (cheerioError) {
+        console.error(
+          "❌ [StockMonitor] Cheerio fallback also failed:",
+          cheerioError
+        );
+        const errorStatus: StockStatus = {
+          isInStock: false,
+          lastChecked: new Date(),
+          error: error instanceof Error ? error.message : "Unknown error",
+        };
+        this.lastStatus = errorStatus;
+        return errorStatus;
+      }
     }
   }
 
   private async checkWithPuppeteer(): Promise<StockStatus> {
-    const browser = await puppeteer.launch({
-      headless: false,
-      args: ["--no-sandbox", "--disable-setuid-sandbox"],
-    });
+    // Detect if we're running in a server environment
+    const isServer =
+      process.env.NODE_ENV === "production" ||
+      process.env.PLATFORM === "linux" ||
+      !process.env.DISPLAY;
+
+    let browser;
+    try {
+      browser = await puppeteer.launch({
+        headless: false,
+        args: [
+          "--no-sandbox",
+          "--disable-setuid-sandbox",
+          "--disable-dev-shm-usage",
+          "--disable-accelerated-2d-canvas",
+          "--no-first-run",
+          "--no-zygote",
+          "--disable-gpu",
+          "--disable-background-timer-throttling",
+          "--disable-backgrounding-occluded-windows",
+          "--disable-renderer-backgrounding",
+          "--disable-features=TranslateUI",
+          "--disable-ipc-flooding-protection",
+          "--disable-default-apps",
+          "--disable-extensions",
+          "--disable-plugins",
+          "--disable-sync",
+          "--disable-translate",
+          "--hide-scrollbars",
+          "--mute-audio",
+          "--no-default-browser-check",
+          "--no-pings",
+          "--disable-web-security",
+          "--disable-features=VizDisplayCompositor",
+          // Additional args for server environments
+          ...(isServer
+            ? [
+                "--disable-xvfb",
+                "--disable-background-networking",
+                "--disable-background-timer-throttling",
+                "--disable-client-side-phishing-detection",
+                "--disable-component-extensions-with-background-pages",
+                "--disable-domain-reliability",
+                "--disable-features=AudioServiceOutOfProcess",
+                "--disable-hang-monitor",
+                "--disable-prompt-on-repost",
+                "--disable-sync",
+                "--force-color-profile=srgb",
+                "--metrics-recording-only",
+                "--no-default-browser-check",
+                "--no-first-run",
+                "--password-store=basic",
+                "--use-mock-keychain",
+              ]
+            : []),
+        ],
+      });
+    } catch (error) {
+      console.error("❌ Failed to launch Puppeteer browser:", error);
+      console.log("🔄 Falling back to Cheerio for stock checking...");
+      return this.checkWithCheerio();
+    }
 
     try {
       const page = await browser.newPage();
